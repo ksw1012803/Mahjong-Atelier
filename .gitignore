@@ -1,0 +1,72 @@
+# =============================================================================
+# Unity 프로젝트용 .gitignore
+# GitHub Unity 공식 템플릿 기반 + 마작 아틀리에 프로젝트 추가
+# =============================================================================
+
+# === Unity 자동 생성 폴더 ===
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+
+# 자주 까먹는 폴더들
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# Asset Store에서 받은 거 (용량 크면 별도 백업)
+# [Aa]ssets/AssetStoreTools*
+
+# === Visual Studio 캐시 ===
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# === Unity 빌드 산출물 ===
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# === OS별 ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# === 크래시 보고서 ===
+sysinfo.txt
+crashlytics-build.properties
+
+# === 로컬 설정 (개인별로 다름) ===
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+
+# === Burst 디버그 정보 ===
+Assets/StreamingAssets/aa.meta
+Assets/StreamingAssets/aa/*
+
+# === 임시 백업 ===
+*.bak
+*~
+*.orig
+
+# === Steam 빌드 관련 (필요시 무시) ===
+# steam_appid.txt
