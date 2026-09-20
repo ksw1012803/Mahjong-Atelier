@@ -3,55 +3,49 @@ using System.Collections.Generic;
 namespace MahjongAtelier.Core
 {
     /// <summary>
-    /// 패산(牌山) 관리자.
+    /// 패산 매니저 v4 — 깡 처리 (린샨 패 + 추가 도라 공개) 추가.
     /// 
-    /// 일본 표준 룰:
-    ///   - 총 136장: 수패(34종 × 4) + 자패(7종 × 4) = 34×4
-    ///   - 아카도라(빨간 5): 5m, 5p, 5s 각 1장씩이 빨강 (총 3장)
-    ///   - 왕패(王牌): 14장은 화료 불가, 그 중 도라/우라도라 표시
-    ///   - 가능 쯔모: 136 - 14 = 122장
+    /// 왕패(14장) 구조:
+    ///   인덱스 0-4: 도라 표시패 (위, 처음엔 1장만 공개)
+    ///   인덱스 5-9: 우라도라 표시패 (아래)
+    ///   인덱스 10-13: 깡 보충 패 (린샨패), 깡마다 1장씩 소비
     /// 
-    /// MonoBehaviour 의존 제거 → 단위 테스트 가능.
-    /// 셔플은 외부에서 Random을 주입받아 결정론적 테스트 가능.
+    /// 깡 발생 시:
+    ///   1) 린샨패 1장 소비 → 화료자에게 (DrawRinshan)
+    ///   2) 새 도라 표시패 1장 공개 (RevealAdditionalDora)
     /// </summary>
     public sealed class WallManager
     {
-        /// <summary>일반 손에서 끌어 쓰는 패산 (live wall).</summary>
         private readonly List<TileData> _liveWall = new List<TileData>();
-
-        /// <summary>왕패 (dead wall). 14장 고정.</summary>
         private readonly List<TileData> _deadWall = new List<TileData>();
 
-        /// <summary>도라 표시패가 뒤집힌 인덱스 (왕패 내). 보통 0부터 시작.</summary>
         private int _doraIndicatorCount = 1;
+        private int _kanCount = 0;
 
         public const int TotalTiles = 136;
         public const int DeadWallSize = 14;
+        public const int MaxKans = 4;
 
-        /// <summary>화료 가능 남은 패 수.</summary>
         public int RemainingDrawable => _liveWall.Count;
-
         public bool IsExhausted => _liveWall.Count == 0;
+        public int KanCount => _kanCount;
+        public bool CanDrawRinshan => _kanCount < MaxKans;
 
-        /// <summary>
-        /// 패산 생성.
-        /// </summary>
-        /// <param name="includeAkaDora">아카도라 포함 여부 (true: 5m/5p/5s 각 1장이 빨강)</param>
         public void CreateWall(bool includeAkaDora = true)
         {
             _liveWall.Clear();
             _deadWall.Clear();
+            _doraIndicatorCount = 1;
+            _kanCount = 0;
 
             int nextId = 0;
 
-            // 수패: 만/통/삭 1~9 각 4장
             foreach (TileSuit suit in new[] { TileSuit.Man, TileSuit.Pin, TileSuit.Sou })
             {
                 for (int number = 1; number <= 9; number++)
                 {
                     for (int copy = 0; copy < 4; copy++)
                     {
-                        // 아카도라: 5의 첫 번째 카피(copy==0)를 빨강으로
                         bool isRed = includeAkaDora && number == 5 && copy == 0;
                         var kind = new TileKind(suit, number);
                         _liveWall.Add(new TileData(nextId++, kind, isRed));
@@ -59,14 +53,12 @@ namespace MahjongAtelier.Core
                 }
             }
 
-            // 풍패: 동남서북 각 4장
             for (int number = 1; number <= 4; number++)
             {
                 for (int copy = 0; copy < 4; copy++)
                     _liveWall.Add(new TileData(nextId++, new TileKind(TileSuit.Wind, number)));
             }
 
-            // 삼원패: 백발중 각 4장
             for (int number = 1; number <= 3; number++)
             {
                 for (int copy = 0; copy < 4; copy++)
@@ -77,20 +69,13 @@ namespace MahjongAtelier.Core
             GameEvents.RaiseWallCountChanged(_liveWall.Count);
         }
 
-        /// <summary>
-        /// 셔플. System.Random을 주입받아 결정론적 테스트 가능.
-        /// Unity에서는 new System.Random()을 그대로 사용.
-        /// </summary>
         public void Shuffle(System.Random rng)
         {
-            // Fisher-Yates
             for (int i = _liveWall.Count - 1; i > 0; i--)
             {
                 int j = rng.Next(i + 1);
                 (_liveWall[i], _liveWall[j]) = (_liveWall[j], _liveWall[i]);
             }
-
-            // 셔플 후 왕패 14장 분리
             SetupDeadWall();
         }
 
@@ -103,15 +88,42 @@ namespace MahjongAtelier.Core
             _liveWall.RemoveRange(splitFrom, DeadWallSize);
         }
 
-        /// <summary>패산에서 1장 쯔모.</summary>
         public TileData DrawTile()
         {
             if (_liveWall.Count == 0) return null;
-
-            // 마지막에서 빼는 것이 O(1)
             int lastIndex = _liveWall.Count - 1;
             TileData tile = _liveWall[lastIndex];
             _liveWall.RemoveAt(lastIndex);
+            GameEvents.RaiseWallCountChanged(_liveWall.Count);
+            return tile;
+        }
+
+        // === 깡 처리 ===
+
+        /// <summary>
+        /// 린샨 패(嶺上牌) 1장을 가져옴. 깡 후 보충용.
+        /// 동시에 _kanCount 증가.
+        /// </summary>
+        public TileData DrawRinshan()
+        {
+            if (!CanDrawRinshan) return null;
+
+            // 린샨패 영역: dead wall 인덱스 10~13 (4장)
+            // 깡 횟수에 따라 13, 12, 11, 10번 순서
+            int rinshanIdx = 13 - _kanCount;
+            if (rinshanIdx < 10 || rinshanIdx >= _deadWall.Count) return null;
+
+            var tile = _deadWall[rinshanIdx];
+            _kanCount++;
+
+            // 라이브 월에서 끝에서 1장을 deadwall로 이동 (실제 마작 룰)
+            // 단순화: 그냥 _liveWall 끝을 1장 줄여서 패산 수 맞춤
+            if (_liveWall.Count > 0)
+            {
+                // 패산 수는 그대로 줄어든 것처럼 처리 (실제로는 라이브월에서 1장 deadwall로 이동)
+                // 여기서는 단순화: 그냥 1장 줄임
+                _liveWall.RemoveAt(_liveWall.Count - 1);
+            }
 
             GameEvents.RaiseWallCountChanged(_liveWall.Count);
             return tile;
@@ -119,22 +131,31 @@ namespace MahjongAtelier.Core
 
         // === 도라 ===
 
-        /// <summary>현재 표시된 도라 인디케이터들.</summary>
         public IReadOnlyList<TileData> GetDoraIndicators()
         {
             var list = new List<TileData>();
-            for (int i = 0; i < _doraIndicatorCount && i < _deadWall.Count; i++)
+            for (int i = 0; i < _doraIndicatorCount && i < 5 && i < _deadWall.Count; i++)
                 list.Add(_deadWall[i]);
             return list;
         }
 
-        /// <summary>깡 등으로 도라 추가.</summary>
+        public IReadOnlyList<TileData> GetUraDoraIndicators()
+        {
+            var list = new List<TileData>();
+            for (int i = 0; i < _doraIndicatorCount && i < 5; i++)
+            {
+                int idx = 5 + i;
+                if (idx < _deadWall.Count) list.Add(_deadWall[idx]);
+            }
+            return list;
+        }
+
+        /// <summary>새 도라 표시패 공개 (깡 시).</summary>
         public void RevealAdditionalDora()
         {
             if (_doraIndicatorCount < 5) _doraIndicatorCount++;
         }
 
-        /// <summary>도라 표시패 → 도라패 변환. (예: 1m 표시 → 2m이 도라, 9m 표시 → 1m이 도라)</summary>
         public static TileKind IndicatorToDora(TileKind indicator)
         {
             if (indicator.Suit.IsNumber())
@@ -144,13 +165,11 @@ namespace MahjongAtelier.Core
             }
             if (indicator.Suit == TileSuit.Wind)
             {
-                // 東→南→西→北→東
                 int next = indicator.Number == 4 ? 1 : indicator.Number + 1;
                 return new TileKind(TileSuit.Wind, next);
             }
             if (indicator.Suit == TileSuit.Dragon)
             {
-                // 白→發→中→白
                 int next = indicator.Number == 3 ? 1 : indicator.Number + 1;
                 return new TileKind(TileSuit.Dragon, next);
             }

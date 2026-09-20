@@ -1,82 +1,79 @@
 using System;
+using System.Collections.Generic;
 
 namespace MahjongAtelier.Core
 {
     /// <summary>
-    /// 게임 코어 ↔ UI/네트워크/AI 사이의 이벤트 버스.
-    /// 
-    /// 코어 로직(MahjongGameManager 등)은 이벤트를 발생만 시키고,
-    /// UI/AI/네트워크 모듈은 이벤트를 구독해서 반응합니다.
-    /// 
-    /// 이렇게 분리하면:
-    ///   - 코어를 Unity 의존 없이 단위 테스트 가능
-    ///   - 4인용/네트워크 확장 시 코어 수정 최소화
-    ///   - 같은 이벤트에 UI도 반응하고 사운드도 반응하는 등 멀티 구독 자연스러움
-    /// 
-    /// 사용 예:
-    ///   GameEvents.OnTileDrawn += (p, tile) => handUI.AddTile(tile);
-    ///   GameEvents.OnTileDrawn += (p, tile) => soundSystem.PlayDraw();
+    /// 이벤트 버스 v5 — 후로 이벤트 추가.
     /// </summary>
     public static class GameEvents
     {
-        // === 게임 상태 ===
-
-        /// <summary>게임 단계 전환. (이전, 새로운)</summary>
+        // 기존 이벤트들
         public static event Action<GamePhase, GamePhase> OnPhaseChanged;
+        public static void RaisePhaseChanged(GamePhase prev, GamePhase next) => OnPhaseChanged?.Invoke(prev, next);
 
-        public static void RaisePhaseChanged(GamePhase prev, GamePhase next) =>
-            OnPhaseChanged?.Invoke(prev, next);
-
-        // === 패산 ===
-
-        /// <summary>패산 생성 완료.</summary>
         public static event Action OnWallCreated;
         public static void RaiseWallCreated() => OnWallCreated?.Invoke();
 
-        /// <summary>패산 남은 수 변동.</summary>
         public static event Action<int> OnWallCountChanged;
-        public static void RaiseWallCountChanged(int remaining) =>
-            OnWallCountChanged?.Invoke(remaining);
-
-        // === 배패 ===
+        public static void RaiseWallCountChanged(int remaining) => OnWallCountChanged?.Invoke(remaining);
 
         public static event Action OnDealStarted;
         public static event Action OnDealCompleted;
         public static void RaiseDealStarted() => OnDealStarted?.Invoke();
         public static void RaiseDealCompleted() => OnDealCompleted?.Invoke();
 
-        // === 턴/액션 ===
-
-        /// <summary>플레이어 차례 시작. (플레이어 인덱스)</summary>
         public static event Action<int> OnTurnStarted;
-        public static void RaiseTurnStarted(int playerIndex) =>
-            OnTurnStarted?.Invoke(playerIndex);
+        public static void RaiseTurnStarted(int playerIndex) => OnTurnStarted?.Invoke(playerIndex);
 
-        /// <summary>플레이어가 패를 쯔모(자가패산). (플레이어, 쯔모한 패)</summary>
         public static event Action<int, TileData> OnTileDrawn;
-        public static void RaiseTileDrawn(int playerIndex, TileData tile) =>
-            OnTileDrawn?.Invoke(playerIndex, tile);
+        public static void RaiseTileDrawn(int playerIndex, TileData tile) => OnTileDrawn?.Invoke(playerIndex, tile);
 
-        /// <summary>플레이어가 패를 버림. (플레이어, 버린 패)</summary>
         public static event Action<int, TileData> OnTileDiscarded;
-        public static void RaiseTileDiscarded(int playerIndex, TileData tile) =>
-            OnTileDiscarded?.Invoke(playerIndex, tile);
-
-        // === 손패 변경 (UI 갱신용) ===
+        public static void RaiseTileDiscarded(int playerIndex, TileData tile) => OnTileDiscarded?.Invoke(playerIndex, tile);
 
         public static event Action<int> OnHandChanged;
-        public static void RaiseHandChanged(int playerIndex) =>
-            OnHandChanged?.Invoke(playerIndex);
-
-        // === 화료 ===
+        public static void RaiseHandChanged(int playerIndex) => OnHandChanged?.Invoke(playerIndex);
 
         public static event Action<int, AgariForm> OnAgari;
-        public static void RaiseAgari(int playerIndex, AgariForm form) =>
-            OnAgari?.Invoke(playerIndex, form);
+        public static void RaiseAgari(int playerIndex, AgariForm form) => OnAgari?.Invoke(playerIndex, form);
 
-        // === 디버그 ===
+        public static event Action<int> OnRiichiDeclared;
+        public static void RaiseRiichiDeclared(int playerIndex) => OnRiichiDeclared?.Invoke(playerIndex);
 
-        /// <summary>모든 구독 해제. 씬 전환 시 호출 권장.</summary>
+        public static event Action<int, RiichiAnalysis> OnRiichiAvailabilityChanged;
+        public static void RaiseRiichiAvailabilityChanged(int playerIndex, RiichiAnalysis analysis) =>
+            OnRiichiAvailabilityChanged?.Invoke(playerIndex, analysis);
+
+        public static event Action<TileData, int, List<RonCandidate>> OnRonOpportunity;
+        public static void RaiseRonOpportunity(TileData discardedTile, int discarderIndex, List<RonCandidate> candidates) =>
+            OnRonOpportunity?.Invoke(discardedTile, discarderIndex, candidates);
+
+        public static event Action OnRonOpportunityClosed;
+        public static void RaiseRonOpportunityClosed() => OnRonOpportunityClosed?.Invoke();
+
+        // === 후로 ===
+
+        /// <summary>
+        /// 누가 패를 버린 직후, 사용자가 치/펑/명깡 가능한지 알림.
+        /// (모두 분석한 결과를 한 번에 전달)
+        /// </summary>
+        public static event Action<CallOpportunity> OnCallOpportunity;
+        public static void RaiseCallOpportunity(CallOpportunity opp) => OnCallOpportunity?.Invoke(opp);
+
+        public static event Action OnCallOpportunityClosed;
+        public static void RaiseCallOpportunityClosed() => OnCallOpportunityClosed?.Invoke();
+
+        /// <summary>자기 차례에 안깡 또는 가깡 가능한지 알림.</summary>
+        public static event Action<List<TileKind>, List<TileKind>> OnSelfKanAvailability;
+        public static void RaiseSelfKanAvailability(List<TileKind> ankanKinds, List<TileKind> shouminkanKinds) =>
+            OnSelfKanAvailability?.Invoke(ankanKinds, shouminkanKinds);
+
+        /// <summary>후로 선언됨 (시각 갱신용).</summary>
+        public static event Action<int, CalledMeld> OnCallDeclared;
+        public static void RaiseCallDeclared(int playerIndex, CalledMeld meld) =>
+            OnCallDeclared?.Invoke(playerIndex, meld);
+
         public static void Clear()
         {
             OnPhaseChanged = null;
@@ -89,6 +86,31 @@ namespace MahjongAtelier.Core
             OnTileDiscarded = null;
             OnHandChanged = null;
             OnAgari = null;
+            OnRiichiDeclared = null;
+            OnRiichiAvailabilityChanged = null;
+            OnRonOpportunity = null;
+            OnRonOpportunityClosed = null;
+            OnCallOpportunity = null;
+            OnCallOpportunityClosed = null;
+            OnSelfKanAvailability = null;
+            OnCallDeclared = null;
         }
+    }
+
+    /// <summary>
+    /// 사용자에게 전달할 후로 기회 정보.
+    /// </summary>
+    public sealed class CallOpportunity
+    {
+        public TileData DiscardedTile;
+        public int DiscarderIndex;
+
+        public bool CanChi;
+        public List<ChiOption> ChiOptions = new List<ChiOption>();
+
+        public bool CanPon;
+        public bool CanDaiminkan;
+
+        public bool HasAny => CanChi || CanPon || CanDaiminkan;
     }
 }

@@ -1,21 +1,17 @@
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.InputSystem;  // ← Input System 사용
+using UnityEngine.InputSystem;
 using MahjongAtelier.Core;
 
 namespace MahjongAtelier.UI
 {
     /// <summary>
-    /// 손패 UI 매니저 (Unity 6 Input System 버전).
+    /// 손패 UI 매니저 v5 — 사용자 정렬 순서 보존.
     /// 
     /// 변경점:
-    ///   - GameManager 직접 참조 대신 GameEvents 구독
-    ///   - 자동 정렬(F1 또는 버튼) 추가 — PPT에서 언급된 기능
-    ///   - 쯔모 패는 정렬에서 제외하고 끝에 오프셋으로 표시
-    /// 
-    /// Input System:
-    ///   - autoSortKey는 Keyboard.current를 통해 확인
-    ///   - Key enum (UnityEngine.InputSystem.Key)을 인스펙터에서 선택
+    ///   - 손패 변경 시 통째로 다시 그리지 않고 변경분만 반영
+    ///   - 사용자가 드래그로 정렬한 순서 유지
+    ///   - 후로/버림 시 빠진 패만 제거, 쯔모 시 새 패만 추가
     /// </summary>
     public class HandUIManager : MonoBehaviour
     {
@@ -34,30 +30,35 @@ namespace MahjongAtelier.UI
         public MahjongTileDatabase tileDatabase;
 
         [Header("Tsumo Tile")]
-        [Tooltip("쯔모 패를 일반 패에서 떨어뜨리는 가로 간격")]
         public float tsumoOffset = 80f;
 
         [Header("Game Manager")]
         public MahjongGameManager gameManager;
 
         [Header("Auto Sort (Input System)")]
-        [Tooltip("자동 정렬 단축키 (Unity 6 Input System)")]
         [SerializeField] private Key autoSortKey = Key.F1;
-        [SerializeField] private bool autoSortOnDraw = false; // 쯔모 시 자동 정렬
+        [SerializeField] private bool autoSortOnDraw = false;
 
-        /// <summary>지금 손패에서 어떤 게 쯔모 패인지 (마지막에 추가된 것).</summary>
+        [Header("Riichi Integration")]
+        [SerializeField] private RiichiButton riichiButton;
+
+        [Header("Highlight Style")]
+        [Range(0.2f, 1f)]
+        [SerializeField] private float dimmedAlpha = 0.4f;
+
         private TileData _tsumoTile;
-
         private int previewIndex = -1;
         private TileDragUI previewDraggedTile = null;
+        private HashSet<TileData> _highlightFilter = null;
+
+        private bool _needsSync = false;
 
         private void OnEnable()
         {
-            // 어떤 플레이어 인덱스를 표시할지는 GameManager의 currentPlayerIndex를 따름.
-            // 1인용 단계에서는 0번 플레이어만 있으므로 모든 이벤트를 수신.
             GameEvents.OnTileDrawn += HandleTileDrawn;
             GameEvents.OnHandChanged += HandleHandChanged;
             GameEvents.OnDealCompleted += HandleDealCompleted;
+            GameEvents.OnCallDeclared += HandleCallDeclared;
         }
 
         private void OnDisable()
@@ -65,6 +66,7 @@ namespace MahjongAtelier.UI
             GameEvents.OnTileDrawn -= HandleTileDrawn;
             GameEvents.OnHandChanged -= HandleHandChanged;
             GameEvents.OnDealCompleted -= HandleDealCompleted;
+            GameEvents.OnCallDeclared -= HandleCallDeclared;
         }
 
         private void Start()
@@ -74,12 +76,17 @@ namespace MahjongAtelier.UI
 
         private void Update()
         {
-            // Unity 6 Input System: Keyboard.current로 접근
-            // null 체크 — 키보드 미연결 환경(모바일 등)에서도 안전
             var keyboard = Keyboard.current;
             if (keyboard != null && keyboard[autoSortKey].wasPressedThisFrame)
             {
                 AutoSort();
+            }
+
+            // 지연 동기화: 사용자 순서 유지하면서 추가/제거만 반영
+            if (_needsSync)
+            {
+                _needsSync = false;
+                SyncWithPlayerHand();
             }
         }
 
@@ -89,43 +96,139 @@ namespace MahjongAtelier.UI
 
         private void HandleDealCompleted()
         {
+            // 배패 시작 시는 전체 재구성 (사용자 정렬 보존할 게 없음)
             if (gameManager == null || gameManager.Players.Count == 0) return;
             var hand = gameManager.Players[0].HandTiles;
             _tsumoTile = null;
             BuildHand(hand);
-            AutoSort(); // 배패 직후 자동 정렬
+            AutoSort();
         }
 
         private void HandleTileDrawn(int playerIndex, TileData drawnTile)
         {
-            if (playerIndex != 0) return; // 현재 1인용
+            if (playerIndex != 0) return;
             _tsumoTile = drawnTile;
-            if (autoSortOnDraw)
-            {
-                // 정렬 후 쯔모 패는 끝에 오프셋 (HandSorter는 쯔모 구분 없이 정렬하므로 강제 처리)
-                AutoSort(keepTsumoLast: true);
-            }
-            else
-            {
-                // 단순히 끝에 추가
-                if (gameManager != null && gameManager.Players.Count > 0)
-                    BuildHand(gameManager.Players[0].HandTiles);
-            }
+            // 쯔모 패는 SyncWithPlayerHand에서 끝에 추가됨 (이벤트 OnHandChanged도 함께 옴)
+            // autoSortOnDraw가 켜져있으면 정렬, 기본은 사용자 순서 유지
         }
 
         private void HandleHandChanged(int playerIndex)
         {
-            // 단순 변경 알림. 필요 시 더 미세하게 처리.
+            if (playerIndex != 0) return;
+            _needsSync = true;
+        }
+
+        private void HandleCallDeclared(int playerIndex, CalledMeld meld)
+        {
+            if (playerIndex != 0) return;
+            _tsumoTile = null; // 후로 시 쯔모 표시 제거
+            _needsSync = true;
         }
 
         // ====================================================
-        // 자동 정렬
+        // 동기화 — 핵심
         // ====================================================
 
         /// <summary>
-        /// 손패 자동 정렬. 표준 일본 마작 순서.
-        /// keepTsumoLast=true이면 쯔모 패를 정렬에서 분리해 끝에 둠.
+        /// 플레이어 손패와 UI를 동기화. 사용자 정렬 순서 보존.
+        /// 
+        /// 동작:
+        ///   1) UI에 있는데 데이터에 없는 패 → UI에서 제거 (정상 자리 유지)
+        ///   2) 데이터에 있는데 UI에 없는 패 → UI 끝에 추가 (쯔모 패)
+        ///   3) 양쪽에 다 있는 패 → 그대로 (위치 유지)
         /// </summary>
+        private void SyncWithPlayerHand()
+        {
+            if (gameManager == null || gameManager.Players.Count == 0) return;
+
+            var playerHand = gameManager.Players[0].HandTiles;
+            var playerSet = new HashSet<TileData>(playerHand);
+
+            // 1) UI에서 데이터에 없는 패 제거
+            for (int i = tiles.Count - 1; i >= 0; i--)
+            {
+                var dragUI = tiles[i];
+                if (dragUI == null)
+                {
+                    tiles.RemoveAt(i);
+                    continue;
+                }
+                var view = dragUI.GetComponent<TileView>();
+                if (view == null || !playerSet.Contains(view.TileData))
+                {
+                    Destroy(dragUI.gameObject);
+                    tiles.RemoveAt(i);
+                }
+            }
+
+            // 2) 데이터에 있는데 UI에 없는 패 추가
+            var uiSet = new HashSet<TileData>();
+            foreach (var t in tiles)
+            {
+                if (t == null) continue;
+                var view = t.GetComponent<TileView>();
+                if (view != null) uiSet.Add(view.TileData);
+            }
+
+            foreach (var tileData in playerHand)
+            {
+                if (!uiSet.Contains(tileData))
+                {
+                    CreateTile(tileData);
+                }
+            }
+
+            // 3) 슬롯 인덱스 재할당 + 위치 갱신
+            SnapAllImmediately();
+
+            // 강조 필터가 활성이면 다시 적용
+            if (_highlightFilter != null)
+                ApplyHighlightToAll();
+        }
+
+        // ====================================================
+        // 강조 필터 (리치 모드)
+        // ====================================================
+
+        public void SetTileHighlightFilter(List<TileData> allowedTiles)
+        {
+            _highlightFilter = new HashSet<TileData>();
+            foreach (var t in allowedTiles) _highlightFilter.Add(t);
+            ApplyHighlightToAll();
+        }
+
+        public void ClearTileHighlightFilter()
+        {
+            _highlightFilter = null;
+            ApplyHighlightToAll();
+        }
+
+        private void ApplyHighlightToAll()
+        {
+            foreach (var dragUI in tiles)
+            {
+                if (dragUI == null) continue;
+                var view = dragUI.GetComponent<TileView>();
+                if (view == null) continue;
+
+                bool isHighlighted = _highlightFilter == null
+                    || _highlightFilter.Contains(view.TileData);
+                ApplyHighlight(view, isHighlighted);
+            }
+        }
+
+        private void ApplyHighlight(TileView view, bool highlighted)
+        {
+            if (view == null || view.tileImage == null) return;
+            var c = view.tileImage.color;
+            c.a = highlighted ? 1f : dimmedAlpha;
+            view.tileImage.color = c;
+        }
+
+        // ====================================================
+        // 자동 정렬 (F1 키)
+        // ====================================================
+
         public void AutoSort(bool keepTsumoLast = true)
         {
             if (gameManager == null || gameManager.Players.Count == 0) return;
@@ -145,7 +248,7 @@ namespace MahjongAtelier.UI
         }
 
         // ====================================================
-        // 기존 UI 기능 (드래그/프리뷰/스냅)
+        // 드래그/스냅
         // ====================================================
 
         public void SnapAllImmediately()
@@ -184,13 +287,11 @@ namespace MahjongAtelier.UI
         {
             previewDraggedTile = draggedTile;
             previewIndex = tiles.IndexOf(draggedTile);
-            if (debugLog) Debug.Log($"[HandUI] BeginPreview: {draggedTile.name}, idx={previewIndex}");
         }
 
         public void PreviewInsert(TileDragUI draggedTile)
         {
             if (draggedTile == null || tiles.Count == 0 || slots.Count == 0) return;
-
             int targetIndex = GetNearestSlotIndex(draggedTile.GetCurrentPos());
             if (previewDraggedTile == draggedTile && previewIndex == targetIndex) return;
 
@@ -214,15 +315,12 @@ namespace MahjongAtelier.UI
         public void CommitInsert(TileDragUI draggedTile)
         {
             if (draggedTile == null || tiles.Count == 0 || slots.Count == 0) return;
-
             int oldIndex = tiles.IndexOf(draggedTile);
             if (oldIndex < 0) return;
-
             int targetIndex = GetNearestSlotIndex(draggedTile.GetCurrentPos());
             tiles.RemoveAt(oldIndex);
             if (targetIndex > tiles.Count) targetIndex = tiles.Count;
             tiles.Insert(targetIndex, draggedTile);
-
             SnapAllSmooth();
             previewDraggedTile = null;
             previewIndex = -1;
@@ -236,59 +334,38 @@ namespace MahjongAtelier.UI
         }
 
         // ====================================================
-        // 타일 생성/파괴
+        // 타일 생성 (전체 재구성용 — 배패/자동정렬)
         // ====================================================
 
-        /// <summary>리스트 그대로 UI를 다시 빌드.</summary>
         public void BuildHand(List<TileData> handData)
         {
             ClearTiles();
             foreach (var tileData in handData)
                 CreateTile(tileData);
             SnapAllImmediately();
+
+            if (_highlightFilter != null)
+                ApplyHighlightToAll();
         }
 
-        // 기존 호환성을 위해 남겨둠 (다른 코드가 호출 중일 수 있음)
         public void CreateHand(List<TileData> handData) => BuildHand(handData);
 
         private void CreateTile(TileData tileData)
         {
-
-            // === 디버그: 사전 상태 확인 ===
-            //Debug.Log($"[CreateTile 시작] {tileData} | " +
-            //          $"프리팹 activeSelf={tilePrefab.activeSelf}, " +
-            //          $"tileRoot.activeSelf={tileRoot.gameObject.activeSelf}, " +
-            //          $"tileRoot.activeInHierarchy={tileRoot.gameObject.activeInHierarchy}");
-
             GameObject obj = Instantiate(tilePrefab, tileRoot);
-            //Debug.Log($"[1] Instantiate 직후: " +
-            //          $"activeSelf={obj.activeSelf}, " +
-            //          $"activeInHierarchy={obj.activeInHierarchy}, " +
-            //          $"parent={obj.transform.parent?.name}");
-
             obj.SetActive(true);
-            //Debug.Log($"[2] SetActive(true) 직후: " +
-            //          $"activeSelf={obj.activeSelf}, " +
-            //          $"activeInHierarchy={obj.activeInHierarchy}");
 
             var tileView = obj.GetComponent<TileView>();
             var dragUI = obj.GetComponent<TileDragUI>();
 
             Sprite sprite = tileDatabase.GetSprite(tileData);
             tileView.SetTile(tileData, sprite);
-            //Debug.Log($"[3] SetTile 후: " +
-            //          $"activeSelf={obj.activeSelf}, " +
-            //          $"sprite={(sprite != null ? sprite.name : "null")}");
 
             dragUI.handManager = this;
             dragUI.canvas = GetComponentInParent<Canvas>();
             dragUI.handArea = GetComponent<RectTransform>();
 
             tiles.Add(dragUI);
-            //Debug.Log($"[4] tiles.Add 후: " +
-            //          $"activeSelf={obj.activeSelf}, " +
-            //          $"activeInHierarchy={obj.activeInHierarchy}");
-            //Debug.Log($"[CreateTile] {tileData} 생성 후 activeSelf={obj.activeSelf}, activeInHierarchy={obj.activeInHierarchy}");
         }
 
         public void ClearTiles()
@@ -299,7 +376,7 @@ namespace MahjongAtelier.UI
         }
 
         // ====================================================
-        // 슬롯 위치 계산
+        // 슬롯 위치
         // ====================================================
 
         private Vector2 GetSlotPosition(int index)
@@ -312,23 +389,27 @@ namespace MahjongAtelier.UI
 
             Vector2 pos = slots[index].anchoredPosition;
 
-            // 마지막 패가 쯔모 패라면 오프셋
             if (tiles.Count == 14 && index == tiles.Count - 1)
-            {
                 pos.x += tsumoOffset;
-            }
 
             return pos;
         }
 
         // ====================================================
-        // 클릭 처리: 게임매니저에 버림 요청
+        // 클릭 라우팅
         // ====================================================
 
         public void OnTileClicked(TileDragUI tile)
         {
             var tileView = tile.GetComponent<TileView>();
             if (tileView == null || gameManager == null) return;
+
+            if (riichiButton != null && riichiButton.IsInRiichiSelectionMode)
+            {
+                if (riichiButton.TryHandleTileClick(tileView.TileData))
+                    return;
+            }
+
             gameManager.RequestDiscard(tileView.TileData);
         }
     }
