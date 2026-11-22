@@ -1,73 +1,56 @@
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace CardGame.Core
 {
     /// <summary>
-    /// 덱 매니저. 80장 카드 관리.
-    /// 
-    /// 구성:
-    ///   일반 카드 72장 = 4색 × 9숫자 × 2장
-    ///   특수 카드 8장 = 4종류 × 2장
-    /// 
-    /// 마작의 WallManager와 유사하지만 훨씬 단순 (도라/왕패 없음).
+    /// 카드 덱 v5 — 온라인 지원.
+    ///
+    /// v5 변경:
+    ///   - CreateDeck 시 각 카드에 InstanceId(0..N-1) 순차 부여 → 네트워크 식별자
+    ///   - FindInDrawPile(instanceId): Peek 선택을 네트워크 명령으로 해석할 때 사용
+    ///   - ReplicaDrawCount: 온라인 클라이언트가 "호스트가 알려준 남은 장수"를 표시할 때 사용
+    ///     (클라이언트는 실제 덱 내용을 모름 — 장수만 받음)
+    ///   - ClearReplica(): 라운드 시작 시 클라이언트 측 버림패/카운트 초기화
     /// </summary>
-    public sealed class Deck
+    public class Deck
     {
-        public const int TotalCards = 80;
-        public const int NormalCards = 72;
-        public const int SpecialCards = 8;
-
-        /// <summary>드로우 파일 (덱의 위쪽부터 뽑음).</summary>
         private readonly List<CardData> _drawPile = new List<CardData>();
-
-        /// <summary>버림 카드 (라운드 종료 시 다시 셔플해서 덱에 넣을 수 있음).</summary>
         private readonly List<CardData> _discardPile = new List<CardData>();
+        private CardDatabase _database;
 
-        public int RemainingDraws => _drawPile.Count;
-        public int DiscardedCount => _discardPile.Count;
-        public bool IsEmpty => _drawPile.Count == 0;
+        /// <summary>온라인 클라이언트용 남은 장수 오버라이드. -1이면 실제 _drawPile.Count 사용.</summary>
+        public int ReplicaDrawCount { get; set; } = -1;
 
-        /// <summary>덱을 처음부터 만들어 채움. 카드 ID는 0부터 시작.</summary>
+        public int DrawPileCount => ReplicaDrawCount >= 0 ? ReplicaDrawCount : _drawPile.Count;
+        public int DiscardPileCount => _discardPile.Count;
+        public IReadOnlyList<CardData> DiscardPile => _discardPile;
+        public IReadOnlyList<CardData> DrawPile => _drawPile;
+
+        public void SetDatabase(CardDatabase database) => _database = database;
+
         public void CreateDeck()
         {
             _drawPile.Clear();
             _discardPile.Clear();
+            ReplicaDrawCount = -1;
 
-            int nextId = 0;
-
-            // 일반 카드 72장
-            for (int c = 0; c < 4; c++)
+            if (_database == null)
             {
-                var color = (CardColor)c;
-                for (int number = 1; number <= 9; number++)
-                {
-                    // 각 카드 2장씩
-                    for (int copy = 0; copy < 2; copy++)
-                    {
-                        var kind = new CardKind(color, number);
-                        _drawPile.Add(new CardData(nextId++, kind));
-                    }
-                }
+                Debug.LogError("[Deck] CardDatabase 없음. SetDatabase 호출 필요.");
+                return;
             }
 
-            // 특수 카드 8장 (4종류 × 2장)
-            foreach (SpecialCardType special in new[]
+            int id = 0;
+            foreach (var def in _database.GetDeckDefinitions())
             {
-                SpecialCardType.Wild,
-                SpecialCardType.Swap,
-                SpecialCardType.Peek,
-                SpecialCardType.Chaos
-            })
-            {
-                for (int copy = 0; copy < 2; copy++)
-                {
-                    var kind = new CardKind(special);
-                    _drawPile.Add(new CardData(nextId++, kind));
-                }
+                var card = new CardData(def) { InstanceId = id++ };
+                _drawPile.Add(card);
             }
+
+            Debug.Log($"[Deck] 생성: {_drawPile.Count}장");
         }
 
-        /// <summary>덱 셔플.</summary>
         public void Shuffle(System.Random rng)
         {
             for (int i = _drawPile.Count - 1; i > 0; i--)
@@ -77,48 +60,59 @@ namespace CardGame.Core
             }
         }
 
-        /// <summary>덱 위에서 1장 뽑기. 없으면 null.</summary>
         public CardData DrawTop()
         {
             if (_drawPile.Count == 0) return null;
-            int lastIdx = _drawPile.Count - 1;
-            var card = _drawPile[lastIdx];
-            _drawPile.RemoveAt(lastIdx);
+            var card = _drawPile[_drawPile.Count - 1];
+            _drawPile.RemoveAt(_drawPile.Count - 1);
             return card;
         }
 
-        /// <summary>버림 파일에 추가.</summary>
-        public void AddToDiscard(CardData card)
+        public List<CardData> PeekTop(int count)
         {
-            if (card == null) return;
-            _discardPile.Add(card);
+            var list = new List<CardData>();
+            for (int i = 0; i < count && _drawPile.Count - 1 - i >= 0; i++)
+                list.Add(_drawPile[_drawPile.Count - 1 - i]);
+            return list;
         }
 
-        /// <summary>
-        /// 덱이 비었을 때 버림 파일을 다시 셔플해서 덱으로 만듦.
-        /// 규칙에 따라 다른데 기본은 남은 카드로 계속 진행.
-        /// </summary>
+        /// <summary>InstanceId로 덱(드로우 파일) 안의 카드 검색.</summary>
+        public CardData FindInDrawPile(int instanceId)
+        {
+            for (int i = 0; i < _drawPile.Count; i++)
+                if (_drawPile[i].InstanceId == instanceId) return _drawPile[i];
+            return null;
+        }
+
+        /// <summary>덱에서 특정 카드 제거 (Peek 선택 시 사용).</summary>
+        public bool RemoveFromDeck(CardData card)
+        {
+            if (card == null) return false;
+            return _drawPile.Remove(card);
+        }
+
+        public void AddToDiscard(CardData card)
+        {
+            if (card != null) _discardPile.Add(card);
+        }
+
         public void ReshuffleDiscardIntoDeck(System.Random rng)
         {
+            if (_discardPile.Count <= 1) return;
+            var top = _discardPile[_discardPile.Count - 1];
+            _discardPile.RemoveAt(_discardPile.Count - 1);
             _drawPile.AddRange(_discardPile);
             _discardPile.Clear();
+            _discardPile.Add(top);
             Shuffle(rng);
         }
 
-        /// <summary>덱 위 N장 확인 (탐색 카드용). 뽑지는 않음.</summary>
-        public List<CardData> PeekTop(int count)
+        /// <summary>온라인 클라이언트: 라운드 시작 시 복제본 상태 초기화.</summary>
+        public void ClearReplica()
         {
-            var result = new List<CardData>();
-            int start = System.Math.Max(0, _drawPile.Count - count);
-            for (int i = _drawPile.Count - 1; i >= start; i--)
-                result.Add(_drawPile[i]);
-            return result;
-        }
-
-        /// <summary>덱에서 특정 카드를 꺼냄 (탐색 카드로 선택 시).</summary>
-        public bool RemoveFromDeck(CardData card)
-        {
-            return _drawPile.Remove(card);
+            _drawPile.Clear();
+            _discardPile.Clear();
+            ReplicaDrawCount = 0;
         }
     }
 }
