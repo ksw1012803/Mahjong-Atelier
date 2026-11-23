@@ -44,6 +44,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4ba6fdab78fef9e4aab74ff1a30ffbb6, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CardGame.Core.SceneLoader
-  fadeOutDuration: 0.3
-  fadeInDuration: 0.3
+  fadeOutDuration: 0.1
+  fadeInDuration: 0.1
   minLoadingScreenTime: 0.5
+  waitForLoadingComplete: 1
+  maxWaitForComplete: 60

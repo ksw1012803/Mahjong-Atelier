@@ -38,6 +38,8 @@ namespace CardGame.Network
         [SyncVar] private int _seatCount = 4;
         [SyncVar] private int _humanCount = 1;
         [SyncVar] private int _modeIndex = 0;
+        /// <summary>봇 캐릭터 랜덤 배정용 시드 — 호스트가 정하고 클라이언트와 공유 (모두 같은 봇 캐릭터를 보도록).</summary>
+        [SyncVar] private int _botSeed = 1;
 
         private CardGameManager _gm;
         private CardGameNetworkManager _netMgr;
@@ -82,6 +84,7 @@ namespace CardGame.Network
             _seatCount = _netMgr != null ? _netMgr.MaxSeats : 4;
             _humanCount = CountServerHumans();
             _modeIndex = SceneContext.Get<int>(SceneContextKeys.SelectedModeIndex, 0);
+            _botSeed = Random.Range(1, int.MaxValue);
 
             StartCoroutine(ServerBootstrap());
         }
@@ -178,14 +181,12 @@ namespace CardGame.Network
                     sc.Type = (s == hostSeat) ? PlayerType.Human : PlayerType.RemoteHuman;
                     sc.DisplayName = np.displayName;
                     sc.SteamId = np.steamId;
+                    sc.CharacterIndex = np.characterIndex;
                 }
-                else
-                {
-                    sc.Type = PlayerType.Bot;
-                    sc.DisplayName = $"BOT {s + 1}";
-                }
+                else sc.Type = PlayerType.Bot;
                 cfg.Seats.Add(sc);
             }
+            SeatIdentity.AssignBots(cfg, _botSeed);
             return cfg;
         }
 
@@ -226,6 +227,7 @@ namespace CardGame.Network
 
             if (_gm.PeekPanel != null) _gm.PeekPanel.OnCardSelected += HostPeekPanelSelected;
             if (_gm.SwapPanel != null) _gm.SwapPanel.OnTargetSelected += HostSwapPanelSelected;
+            if (_gm.SwapPanel != null) _gm.SwapPanel.OnSkipped += HostSwapPanelSkipped;
         }
 
         private void UnhookServer()
@@ -242,6 +244,7 @@ namespace CardGame.Network
                 _gm.OnSwapChoiceRequested -= ServerOnSwapChoiceRequested;
                 if (_gm.PeekPanel != null) _gm.PeekPanel.OnCardSelected -= HostPeekPanelSelected;
                 if (_gm.SwapPanel != null) _gm.SwapPanel.OnTargetSelected -= HostSwapPanelSelected;
+                if (_gm.SwapPanel != null) _gm.SwapPanel.OnSkipped -= HostSwapPanelSkipped;
             }
 
             CardGameEvents.OnDealCompleted -= ServerOnDealCompleted;
@@ -344,6 +347,14 @@ namespace CardGame.Network
             _hostSwapSeat = -1;
             if (!_gm.SubmitSwapTarget(seat, target != null ? target.Index : -1))
                 _gm.SubmitSwapTarget(seat, -1);
+        }
+
+        private void HostSwapPanelSkipped()
+        {
+            if (!isServer || _hostSwapSeat < 0) return;
+            int seat = _hostSwapSeat;
+            _hostSwapSeat = -1;
+            _gm.SubmitSwapTarget(seat, CardGameManager.SwapTargetSkip);
         }
 
         private void ServerOnDealCompleted()
@@ -525,6 +536,16 @@ namespace CardGame.Network
             if (!ok) Debug.LogWarning($"[Session/Server] Swap 대상 거부: seat {seat} → {targetSeat}");
         }
 
+        /// <summary>클라이언트: Swap 카드를 버리면서 미리 고른 교환 상대를 함께 보냄.</summary>
+        [Command(requiresAuthority = false)]
+        private void CmdDiscardSwap(int instanceId, int targetSeat, NetworkConnectionToClient sender = null)
+        {
+            int seat = _netMgr != null ? _netMgr.GetSeatForConnection(sender) : -1;
+            if (seat < 0 || _gm == null) return;
+            bool ok = _gm.RequestDiscardForSeat(seat, instanceId, targetSeat);
+            if (!ok) Debug.LogWarning($"[Session/Server] Swap 버리기 거부: seat {seat}, id {instanceId} → {targetSeat}");
+        }
+
         [Command(requiresAuthority = false)]
         private void CmdDiscard(int instanceId, NetworkConnectionToClient sender = null)
         {
@@ -610,14 +631,12 @@ namespace CardGame.Network
                     sc.Type = np.isLocalPlayer ? PlayerType.Human : PlayerType.RemoteHuman;
                     sc.DisplayName = np.displayName;
                     sc.SteamId = np.steamId;
+                    sc.CharacterIndex = np.characterIndex;
                 }
-                else
-                {
-                    sc.Type = PlayerType.Bot;
-                    sc.DisplayName = $"BOT {s + 1}";
-                }
+                else sc.Type = PlayerType.Bot;
                 cfg.Seats.Add(sc);
             }
+            SeatIdentity.AssignBots(cfg, _botSeed);
             return cfg;
         }
 
@@ -626,6 +645,7 @@ namespace CardGame.Network
             if (_clientHooked || _gm == null) return;
             _clientHooked = true;
             _gm.OnClientDiscardRequested += ClientOnDiscardRequested;
+            _gm.OnClientSwapDiscardRequested += ClientOnSwapDiscardRequested;
             _gm.OnClientCompletionCheckRequested += ClientOnCompletionCheckRequested;
             _gm.OnClientWinDeclareRequested += ClientOnWinDeclareRequested;
         }
@@ -637,12 +657,16 @@ namespace CardGame.Network
             if (_gm != null)
             {
                 _gm.OnClientDiscardRequested -= ClientOnDiscardRequested;
+                _gm.OnClientSwapDiscardRequested -= ClientOnSwapDiscardRequested;
                 _gm.OnClientCompletionCheckRequested -= ClientOnCompletionCheckRequested;
                 _gm.OnClientWinDeclareRequested -= ClientOnWinDeclareRequested;
                 if (_clientPeekPanelHooked && _gm.PeekPanel != null)
                     _gm.PeekPanel.OnCardSelected -= ClientPeekPanelSelected;
                 if (_clientSwapPanelHooked && _gm.SwapPanel != null)
+                {
                     _gm.SwapPanel.OnTargetSelected -= ClientSwapPanelSelected;
+                    _gm.SwapPanel.OnSkipped -= ClientSwapPanelSkipped;
+                }
             }
         }
 
@@ -650,6 +674,12 @@ namespace CardGame.Network
         {
             if (card == null || card.InstanceId < 0) return;
             CmdDiscard(card.InstanceId);
+        }
+
+        private void ClientOnSwapDiscardRequested(CardData card, int targetSeat)
+        {
+            if (card == null || card.InstanceId < 0) return;
+            CmdDiscardSwap(card.InstanceId, targetSeat);
         }
 
         private void ClientOnCompletionCheckRequested()
@@ -672,7 +702,15 @@ namespace CardGame.Network
         private void ClientSwapPanelSelected(Player target, CardData sourceCard, CardData targetCard)
         {
             if (isServer) return;
+            if (_gm.CurrentPhase != GamePhase.WaitingSpecialAction) return;   // 버리기 전 선택은 매니저가 처리
             CmdSwapTarget(target != null ? target.Index : -1);
+        }
+
+        private void ClientSwapPanelSkipped()
+        {
+            if (isServer) return;
+            if (_gm.CurrentPhase != GamePhase.WaitingSpecialAction) return;
+            CmdSwapTarget(CardGameManager.SwapTargetSkip);
         }
 
         private List<CardData> ResolveAll(NetCard[] cards)
@@ -866,6 +904,7 @@ namespace CardGame.Network
             if (!_clientSwapPanelHooked)
             {
                 panel.OnTargetSelected += ClientSwapPanelSelected;
+                panel.OnSkipped += ClientSwapPanelSkipped;
                 _clientSwapPanelHooked = true;
             }
             panel.Show(_gm.Players[mySeat], _gm.Players);

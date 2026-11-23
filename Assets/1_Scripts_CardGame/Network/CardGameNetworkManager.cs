@@ -10,6 +10,12 @@ using Steamworks;
 
 namespace CardGame.Network
 {
+    /// <summary>호스트 → 전원: 로딩씬으로 이동해 게임 데이터를 불러오라.</summary>
+    public struct PrepareGameMessage : NetworkMessage { }
+
+    /// <summary>클라이언트 → 호스트: 로딩 끝 (DB 준비 완료).</summary>
+    public struct GameAssetsLoadedMessage : NetworkMessage { }
+
     /// <summary>
     /// SEVEN MAID 전용 NetworkManager (Mirror) v2 — 재접속 + 호스트 이전.
     ///
@@ -33,6 +39,11 @@ namespace CardGame.Network
     ///   호스트가 사라지면 Steam이 로비 오너를 다른 멤버에게 넘긴다. 새 오너가 호스트를 열고
     ///   (점수·라운드 번호·좌석 유지) 현재 라운드를 처음부터 다시 시작한다. 나머지는 새 호스트에 자동 접속.
     ///   클라이언트는 남의 손패와 덱 순서를 모르기 때문에 "진행 중이던 판 그대로"는 이어갈 수 없다.
+    ///
+    /// ■ 게임 시작 로딩
+    ///   [게임 시작] → 호스트가 PrepareGameMessage 전송 → 전원 LoadScene으로 이동해 CardDatabase 로드
+    ///   → 각자 GameAssetsLoadedMessage 회신 → 전원 완료(또는 시간 초과) 시 호스트가 게임 씬으로 전환.
+    ///   로비/방 화면에서는 DB를 불러오지 않는다.
     /// </summary>
     public class CardGameNetworkManager : NetworkManager
     {
@@ -58,6 +69,14 @@ namespace CardGame.Network
         [SerializeField, Range(2f, 20f)] private float reconnectRetryInterval = 5f;
         [Tooltip("새 호스트가 다른 플레이어의 접속을 기다리는 시간(초). 늦게 온 사람은 재접속 경로로 합류.")]
         [SerializeField, Range(1f, 20f)] private float migrationGatherTime = 6f;
+
+        [Header("게임 시작 로딩")]
+        [Tooltip("게임 시작 시 거쳐 가는 로딩 씬 (LoadingSceneController가 DB를 불러옴).")]
+        [SerializeField] private string loadingSceneName = "LoadScene";
+        [Tooltip("로딩 화면 최소 표시 시간(초).")]
+        [SerializeField, Range(0f, 10f)] private float minLoadingTime = 2f;
+        [Tooltip("전원 로딩 완료를 기다리는 최대 시간(초). 넘으면 늦은 사람을 기다리지 않고 시작.")]
+        [SerializeField, Range(10f, 120f)] private float loadingTimeout = 60f;
 
         /// <summary>세션 상태 변화 알림 (UI용).</summary>
         public event Action<string> OnStatus;
@@ -98,6 +117,15 @@ namespace CardGame.Network
         private GameResumeData _pendingResume;   // 끊긴 순간의 진행 상황 (새 호스트가 될 때 사용)
         private int _pendingLocalSeat = -1;
         private GameResumeData _resumeData;      // 새 호스트: 다음 세션이 가져갈 데이터
+
+        // 게임 시작 로딩
+        private readonly HashSet<int> _loadedConnIds = new HashSet<int>();
+        private Coroutine _serverPrepareRoutine;
+        private Coroutine _clientLoadRoutine;
+        private bool _clientPreparing;
+
+        /// <summary>게임 시작 로딩 중 (로딩씬 표시 중).</summary>
+        public bool IsPreparingGame => _clientPreparing;
 
         private static SteamLobbyManager Lobby => SteamLobbyManager.Instance;
 
@@ -239,15 +267,102 @@ namespace CardGame.Network
             else Lobby?.SetLobbyJoinable(false);
 
             SceneContext.Set(SceneContextKeys.OnlineSession, true);
-            ServerChangeScene(gameSceneName);
+
+            // 전원 로딩씬으로 → 로딩 완료 후 게임 씬
+            _loadedConnIds.Clear();
+            if (_serverPrepareRoutine != null) StopCoroutine(_serverPrepareRoutine);
+            NetworkServer.SendToAll(new PrepareGameMessage());
+            _serverPrepareRoutine = StartCoroutine(ServerWaitForLoading());
             return true;
+        }
+
+        // =====================================================================
+        //  게임 시작 로딩 (로딩씬에서 DB 로드)
+        // =====================================================================
+
+        private IEnumerator ServerWaitForLoading()
+        {
+            float t = 0f;
+            while (t < loadingTimeout)
+            {
+                if (!NetworkServer.active) { _serverPrepareRoutine = null; yield break; }
+
+                bool all = true;
+                foreach (var id in NetworkServer.connections.Keys)
+                    if (!_loadedConnIds.Contains(id)) { all = false; break; }
+                if (all) break;
+
+                t += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            _serverPrepareRoutine = null;
+            if (!NetworkServer.active) yield break;
+            if (t >= loadingTimeout) Debug.LogWarning("[NetMgr] 로딩 대기 시간 초과 — 완료된 인원으로 게임 시작");
+            Debug.Log($"[NetMgr] 전원 로딩 완료 ({_loadedConnIds.Count}명) — 게임 씬으로 전환");
+            ServerChangeScene(gameSceneName);
+        }
+
+        private void OnServerAssetsLoaded(NetworkConnectionToClient conn, GameAssetsLoadedMessage msg)
+        {
+            if (conn == null) return;
+            _loadedConnIds.Add(conn.connectionId);
+            Debug.Log($"[NetMgr] 로딩 완료 수신: conn {conn.connectionId} ({_loadedConnIds.Count}/{NetworkServer.connections.Count})");
+        }
+
+        private void OnClientPrepareGame(PrepareGameMessage msg)
+        {
+            if (_clientPreparing) return;
+            _clientPreparing = true;
+
+            SceneContext.Set(SceneContextKeys.OnlineSession, true);
+            // LoadingSceneController는 "로비에서 왔을 때만" DB를 불러온다
+            SceneContext.PreviousScene = GameScene.LobbyScene;
+
+            if (_clientLoadRoutine != null) StopCoroutine(_clientLoadRoutine);
+            _clientLoadRoutine = StartCoroutine(ClientLoadingRoutine());
+        }
+
+        private IEnumerator ClientLoadingRoutine()
+        {
+            if (FadeController.Instance != null)
+                yield return FadeController.Instance.FadeOutRoutine(fadeDuration);
+
+            var op = SceneManager.LoadSceneAsync(loadingSceneName, LoadSceneMode.Single);
+            if (op != null) while (!op.isDone) yield return null;
+            yield return null;   // LoadingSceneController.Awake/Start
+
+            if (FadeController.Instance != null)
+                yield return FadeController.Instance.FadeInRoutine(fadeDuration);
+
+            float t = 0f;
+            while ((t < minLoadingTime || !LoadingSceneController.IsLoadComplete) && t < loadingTimeout)
+            {
+                t += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            _clientLoadRoutine = null;
+            if (NetworkClient.isConnected)
+            {
+                Debug.Log("[NetMgr] 로딩 완료 — 호스트에 알림");
+                NetworkClient.Send(new GameAssetsLoadedMessage());
+            }
+            // 이후 호스트의 씬 전환 메시지로 게임 씬 로드 (로딩 화면은 그때까지 유지)
+        }
+
+        private void StopClientPreparing()
+        {
+            _clientPreparing = false;
+            if (_clientLoadRoutine != null) { StopCoroutine(_clientLoadRoutine); _clientLoadRoutine = null; }
         }
 
         /// <summary>호스트/클라이언트 공통: 스스로 세션을 나감 → 로비 씬으로 복귀.</summary>
         public void LeaveSession()
         {
             _leaving = true;
-            bool wasInGame = IsInGameScene();
+            bool wasInGame = IsInGameFlow();
+            StopClientPreparing();
 
             StopRecovery();
             SetRecovery(false, "");
@@ -275,6 +390,9 @@ namespace CardGame.Network
         }
 
         private bool IsInGameScene() => SceneManager.GetActiveScene().name == gameSceneName;
+        private bool IsInLoadingScene() => SceneManager.GetActiveScene().name == loadingSceneName;
+        /// <summary>게임 씬이거나 게임 시작 로딩 중 — 세션이 끊기면 로비로 돌려보내야 하는 상태.</summary>
+        private bool IsInGameFlow() => IsInGameScene() || IsInLoadingScene();
 
         private bool _returningToLobby;
 
@@ -282,7 +400,7 @@ namespace CardGame.Network
 
         private void ReturnToLobbyScene()
         {
-            if (!IsInGameScene() || _returningToLobby) return;
+            if (!IsInGameFlow() || _returningToLobby) return;
             _returningToLobby = true;
             StartCoroutine(ReturnToLobbyRoutine());
         }
@@ -291,7 +409,7 @@ namespace CardGame.Network
         {
             // Mirror 종료 처리가 끝난 다음 프레임에 전환
             yield return null;
-            if (!IsInGameScene() || InSession) { _returningToLobby = false; yield break; }
+            if (!IsInGameFlow() || InSession) { _returningToLobby = false; yield break; }
 
             LoadLobbySceneNow();
         }
@@ -467,8 +585,22 @@ namespace CardGame.Network
             return -1;
         }
 
+        public override void OnStartServer()
+        {
+            base.OnStartServer();
+            NetworkServer.ReplaceHandler<GameAssetsLoadedMessage>(OnServerAssetsLoaded);
+        }
+
+        public override void OnStartClient()
+        {
+            base.OnStartClient();
+            NetworkClient.ReplaceHandler<PrepareGameMessage>(OnClientPrepareGame);
+        }
+
         public override void OnStopServer()
         {
+            if (_serverPrepareRoutine != null) { StopCoroutine(_serverPrepareRoutine); _serverPrepareRoutine = null; }
+            _loadedConnIds.Clear();
             _serverPlayers.Clear();
             _reclaimSeats.Clear();
             _reclaimAnySeats.Clear();
@@ -578,8 +710,9 @@ namespace CardGame.Network
             }
 
             // 일반 종료
-            bool wasInGame = _clientInGame || IsInGameScene();
+            bool wasInGame = _clientInGame || IsInGameFlow();
             bool gameFinished = IsGameFinished();
+            StopClientPreparing();
 
             GameStarted = false;
             _clientInGame = false;
@@ -627,6 +760,7 @@ namespace CardGame.Network
 
             if (IsInGameScene())
             {
+                StopClientPreparing();
                 _clientInGame = true;
                 Lobby?.SaveRejoinInfo();
 
@@ -646,7 +780,9 @@ namespace CardGame.Network
         public override void OnStopHost()
         {
             base.OnStopHost();
-            bool wasInGame = IsInGameScene();
+            bool wasInGame = IsInGameFlow();
+            StopClientPreparing();
+            if (_serverPrepareRoutine != null) { StopCoroutine(_serverPrepareRoutine); _serverPrepareRoutine = null; }
             bool gameFinished = IsGameFinished();
 
             GameStarted = false;

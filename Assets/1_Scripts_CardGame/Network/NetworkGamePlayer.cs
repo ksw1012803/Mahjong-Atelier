@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Mirror;
 using UnityEngine;
+using CardGame.Core;
 
 namespace CardGame.Network
 {
@@ -21,6 +22,7 @@ namespace CardGame.Network
         [SyncVar(hook = nameof(OnSeatChangedHook))] public int seatIndex = -1;
         [SyncVar(hook = nameof(OnNameChangedHook))] public string displayName = "";
         [SyncVar] public ulong steamId;
+        [SyncVar(hook = nameof(OnCharacterChangedHook))] public int characterIndex;
         [SyncVar(hook = nameof(OnReadyChangedHook))] public bool isReady;
         [SyncVar] public bool isHostPlayer;
 
@@ -43,6 +45,7 @@ namespace CardGame.Network
 
         public override void OnStopClient()
         {
+            if (isLocalPlayer) PlayerProfile.OnCharacterChanged -= HandleLocalCharacterChanged;
             All.Remove(this);
             if (Local == this) Local = null;
             OnPlayersChanged?.Invoke();
@@ -60,16 +63,30 @@ namespace CardGame.Network
                 id = lobby.LocalSteamId;
                 name = lobby.LocalPersonaName;
             }
-            CmdSetIdentity(id, name);
+            if (string.IsNullOrWhiteSpace(name)) name = PlayerProfile.Nickname;
+            CmdSetIdentity(id, name, PlayerProfile.CharacterIndex);
+            PlayerProfile.OnCharacterChanged += HandleLocalCharacterChanged;
+        }
+
+        private void HandleLocalCharacterChanged(int index)
+        {
+            if (isLocalPlayer && NetworkClient.isConnected) CmdSetCharacter(index);
         }
 
         // ---------------- commands (client → server) ----------------
 
         [Command]
-        private void CmdSetIdentity(ulong id, string name)
+        private void CmdSetIdentity(ulong id, string name, int character)
         {
             steamId = id;
             displayName = string.IsNullOrWhiteSpace(name) ? $"Player {seatIndex + 1}" : name.Trim();
+            characterIndex = Mathf.Max(0, character);
+        }
+
+        [Command]
+        private void CmdSetCharacter(int character)
+        {
+            characterIndex = Mathf.Max(0, character);
         }
 
         [Command]
@@ -93,6 +110,7 @@ namespace CardGame.Network
         private void OnSeatChangedHook(int _, int __) { SortAll(); OnPlayersChanged?.Invoke(); }
         private void OnNameChangedHook(string _, string __) => OnPlayersChanged?.Invoke();
         private void OnReadyChangedHook(bool _, bool __) => OnPlayersChanged?.Invoke();
+        private void OnCharacterChangedHook(int _, int __) => OnPlayersChanged?.Invoke();
 
         private static void SortAll()
         {

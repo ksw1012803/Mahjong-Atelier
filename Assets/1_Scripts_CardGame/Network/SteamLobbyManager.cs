@@ -52,6 +52,11 @@ namespace CardGame.Network
         public event Action OnLobbyMembersChanged;
         public event Action OnLobbyDataChanged;
         public event Action OnLeftLobby;
+        /// <summary>친구 초대를 수락함 (Steam 친구목록/오버레이에서 '참가'). 로비 화면이 받아서 참가 처리.</summary>
+        public event Action<CSteamID> OnInviteReceived;
+
+        /// <summary>아직 처리 안 된 초대 (로비 화면 밖에서 받았거나, 초대로 게임이 실행된 경우).</summary>
+        public CSteamID PendingInvite { get; private set; } = CSteamID.Nil;
 
         // ---- Steam 콜백 ----
         private Callback<LobbyCreated_t> _cbLobbyCreated;
@@ -87,6 +92,36 @@ namespace CardGame.Network
             _crLobbyList = CallResult<LobbyMatchList_t>.Create(HandleLobbyList);
 
             Debug.Log($"[SteamLobby] 준비 완료 — {SteamFriends.GetPersonaName()} ({SteamUser.GetSteamID()})");
+
+            // 게임이 꺼진 상태에서 초대를 수락하면 Steam이 "+connect_lobby <id>" 인자로 실행함
+            var args = Environment.GetCommandLineArgs();
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (args[i] == "+connect_lobby" && ulong.TryParse(args[i + 1], out var lobbyId) && lobbyId != 0UL)
+                {
+                    PendingInvite = new CSteamID(lobbyId);
+                    Debug.Log($"[SteamLobby] 초대로 실행됨 → 로비 {lobbyId} 참가 대기");
+                    break;
+                }
+            }
+        }
+
+        /// <summary>대기 중인 초대를 꺼냄 (한 번만).</summary>
+        public bool TryConsumePendingInvite(out CSteamID lobbyId)
+        {
+            lobbyId = PendingInvite;
+            if (lobbyId == CSteamID.Nil || !lobbyId.IsValid()) return false;
+            PendingInvite = CSteamID.Nil;
+            return true;
+        }
+
+        /// <summary>친구를 지금 방에 초대 (오버레이 없이). 방에 있을 때만.</summary>
+        public bool InviteFriend(CSteamID friend)
+        {
+            if (!IsSteamReady || !InLobby) return false;
+            bool ok = SteamMatchmaking.InviteUserToLobby(CurrentLobby, friend);
+            Debug.Log($"[SteamLobby] 친구 초대 {SteamFriends.GetFriendPersonaName(friend)} → {(ok ? "보냄" : "실패")}");
+            return ok;
         }
 
         // =====================================================================
@@ -254,7 +289,10 @@ namespace CardGame.Network
         private void HandleJoinRequested(GameLobbyJoinRequested_t cb)
         {
             Debug.Log($"[SteamLobby] 초대/참가 요청 수락: {cb.m_steamIDLobby}");
-            JoinLobby(cb.m_steamIDLobby);
+            if (InLobby && cb.m_steamIDLobby == CurrentLobby) return;   // 이미 그 방
+            // 바로 참가하지 않고 로비 화면(OnlineLobbyPanel)에 맡김 — 게임 중이거나 타이틀이면 로비로 돌아갔을 때 처리
+            PendingInvite = cb.m_steamIDLobby;
+            OnInviteReceived?.Invoke(cb.m_steamIDLobby);
         }
 
         private void HandleLobbyEnter(LobbyEnter_t cb)

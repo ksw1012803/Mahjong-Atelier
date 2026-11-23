@@ -30,6 +30,8 @@ namespace CardGame.Core
         public bool IsRemoteHuman => Type == PlayerType.RemoteHuman;
 
         public string DisplayName { get; set; }
+        /// <summary>선택한 캐릭터 (CharacterDatabase index). 프로필 초상화에 사용.</summary>
+        public int CharacterIndex { get; set; }
 
         public List<CardData> Hand { get; } = new List<CardData>();
         public int TotalScore { get; set; }
@@ -39,7 +41,7 @@ namespace CardGame.Core
         {
             Index = index;
             Type = type;
-            DisplayName = type == PlayerType.Bot ? $"BOT {index + 1}" : $"P{index + 1}";
+            DisplayName = type == PlayerType.Bot ? PlayerProfile.BotName(index + 1) : $"P{index + 1}";
         }
 
         public void AddCard(CardData card)

@@ -28,6 +28,8 @@ namespace CardGame.UI
             public TMP_Text playerText;
             public TMP_Text scoreText;
             public GameObject highlight;
+            [Tooltip("이 순위 플레이어의 캐릭터 초상화.")]
+            public Image portrait;
         }
 
         [Header("Dialog")]
@@ -74,8 +76,8 @@ namespace CardGame.UI
             if (winnerText != null && winnerIndex >= 0 && winnerIndex < players.Count)
             {
                 var winner = players[winnerIndex];
-                string marker = winner.IsHuman ? " (나)" : "";
-                winnerText.text = $"승자: P{winner.Index}{marker}";
+                string marker = winner.IsLocalHuman ? " (나)" : "";
+                winnerText.text = $"승자: {winner.DisplayName}{marker}";
             }
 
             // 점수 내림차순 정렬
@@ -95,11 +97,18 @@ namespace CardGame.UI
                     if (slot.rankText != null) slot.rankText.text = $"{rank}등";
                     if (slot.playerText != null)
                     {
-                        string marker = p.IsHuman ? " (나)" : "";
-                        slot.playerText.text = $"P{p.Index}{marker}";
+                        string marker = p.IsLocalHuman ? " (나)" : "";
+                        slot.playerText.text = $"{p.DisplayName}{marker}";
                     }
                     if (slot.scoreText != null) slot.scoreText.text = $"{p.TotalScore}점";
                     if (slot.highlight != null) slot.highlight.SetActive(rank == 1);
+                    if (slot.portrait != null)
+                    {
+                        slot.portrait.transform.parent.gameObject.SetActive(true);
+                        var db = CharacterDatabase.Instance;
+                        var def = db != null ? db.Get(p.CharacterIndex) : null;
+                        if (def != null && def.portrait != null) slot.portrait.sprite = def.portrait;
+                    }
                 }
                 else
                 {
@@ -107,6 +116,7 @@ namespace CardGame.UI
                     if (slot.playerText != null) slot.playerText.text = "";
                     if (slot.scoreText != null) slot.scoreText.text = "";
                     if (slot.highlight != null) slot.highlight.SetActive(false);
+                    if (slot.portrait != null) slot.portrait.transform.parent.gameObject.SetActive(false);
                 }
             }
 

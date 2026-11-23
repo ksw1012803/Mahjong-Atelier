@@ -92,6 +92,11 @@ public class SteamManager : MonoBehaviour
             return;
         }
 
+#if UNITY_EDITOR
+        // 에디터에서는 Steam 오버레이가 Unity 에디터 창(컬러 피커 등 팝업)에 덮여 입력을 막는 문제가 있어 오버레이 그리기 끔.
+        // (빌드에는 영향 없음. 오버레이 DLL은 한 번 로드되면 에디터를 재시작해야 빠짐)
+        System.Environment.SetEnvironmentVariable("SteamNoOverlayUIDrawing", "1");
+#endif
         m_bInitialized = SteamAPI.Init();
         if (!m_bInitialized)
         {

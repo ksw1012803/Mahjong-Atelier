@@ -17,7 +17,7 @@ namespace CardGame.EditorTools
     /// 
     /// 전제:
     ///   - Resources/CardSprites/ 에 PNG 36장 (fire_red_card_01 등)
-    ///   - Resources/Cards/ 에 3D 프리팹 36개 (Red_Fire_001 등)
+    ///   - 3_Prefabs/Cards3D/ 에 3D 프리팹 40개 (Red_Ele_01 ~ Yellow_Ele_09, Wild/Confusion/Exchange/Serch)
     ///   - Addressables 패키지 설치됨
     /// </summary>
     public class CardDatabaseBuilder : EditorWindow
@@ -25,7 +25,7 @@ namespace CardGame.EditorTools
         private const string DEFINITION_FOLDER = "Assets/Resources/CardDefinitions";
         private const string DATABASE_PATH = "Assets/Resources/CardDatabase.asset";
         private const string SPRITE_FOLDER = "Assets/Resources/CardSprites";
-        private const string PREFAB_FOLDER = "Assets/Resources/Cards";
+        private const string PREFAB_FOLDER = "Assets/3_Prefabs/Cards3D";
 
         [MenuItem("Tools/SEVEN MAID/Build Card Database")]
         public static void BuildAll()
@@ -61,10 +61,10 @@ namespace CardGame.EditorTools
             // 일반 카드 36장
             var colors = new[]
             {
-                (CardColor.Red,    "fire_red",     "Red_Fire"),
-                (CardColor.Blue,   "water_blue",   "Blue_Water"),
-                (CardColor.Green,  "air_green",    "Green_Air"),
-                (CardColor.Yellow, "earth_yellow", "Yellow_Earth"),
+                (CardColor.Red,    "fire_red",     "Red_Ele"),
+                (CardColor.Blue,   "water_blue",   "Blue_Ele"),
+                (CardColor.Green,  "air_green",    "Green_Ele"),
+                (CardColor.Yellow, "earth_yellow", "Yellow_Ele"),
             };
 
             foreach (var (color, spritePrefix, prefabPrefix) in colors)
@@ -79,7 +79,7 @@ namespace CardGame.EditorTools
                     def.displayName = $"{color} {n}";
 
                     var spritePath = $"{SPRITE_FOLDER}/{spritePrefix}_card_{n:D2}.png";
-                    var prefabPath = $"{PREFAB_FOLDER}/{prefabPrefix}_{n:D3}.prefab";
+                    var prefabPath = $"{PREFAB_FOLDER}/{prefabPrefix}_{n:D2}.prefab";
 
                     AssignAddressable(settings, group, spritePath, def, isSprite: true);
                     AssignAddressable(settings, group, prefabPath, def, isSprite: false);
@@ -98,6 +98,7 @@ namespace CardGame.EditorTools
                 def.specialType = type;
                 def.displayName = type.ToString();
                 def.description = GetDescription(type);
+                AssignAddressable(settings, group, $"{PREFAB_FOLDER}/{GetSpecialPrefabName(type)}.prefab", def, isSprite: false);
 
                 EditorUtility.SetDirty(def);
                 database.specialCards.Add(def);
@@ -155,6 +156,15 @@ namespace CardGame.EditorTools
             if (!AssetDatabase.IsValidFolder(parent)) EnsureFolder(parent);
             AssetDatabase.CreateFolder(parent, Path.GetFileName(path));
         }
+
+        private static string GetSpecialPrefabName(SpecialCardType type) => type switch
+        {
+            SpecialCardType.Wild  => "Wild",
+            SpecialCardType.Swap  => "Exchange",
+            SpecialCardType.Peek  => "Serch",
+            SpecialCardType.Chaos => "Confusion",
+            _ => type.ToString()
+        };
 
         private static string GetDescription(SpecialCardType type) => type switch
         {

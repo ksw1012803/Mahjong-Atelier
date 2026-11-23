@@ -55,6 +55,14 @@ namespace CardGame.UI
         [Header("Settings")]
         [SerializeField] private bool autoSort = false;
 
+        [Header("Round End (라운드 종료 시 손패 정리)")]
+        [Tooltip("승리가 확정된 뒤 손패를 치우기 시작할 때까지 대기(초). 마지막 패를 잠깐 보여줌.")]
+        [SerializeField] private float roundEndClearDelay = 0.5f;
+        [Tooltip("손패가 아래로 내려가며 사라지는 시간(초).")]
+        [SerializeField] private float roundEndClearDuration = 0.35f;
+        [SerializeField] private float roundEndDropDistance = 160f;
+        [SerializeField] private float roundEndStagger = 0.04f;
+
         private readonly List<GameObject> _spawned = new List<GameObject>();
         private Canvas _canvas;
 
@@ -96,6 +104,7 @@ namespace CardGame.UI
             CardGameEvents.OnHandChanged += OnHandChanged;
             CardGameEvents.OnCardDrawn += OnCardDrawn;
             CardGameEvents.OnDealCompleted += OnDealCompleted;
+            CardGameEvents.OnCompletion += OnRoundCompleted;
         }
 
         private void OnDisable()
@@ -103,6 +112,7 @@ namespace CardGame.UI
             CardGameEvents.OnHandChanged -= OnHandChanged;
             CardGameEvents.OnCardDrawn -= OnCardDrawn;
             CardGameEvents.OnDealCompleted -= OnDealCompleted;
+            CardGameEvents.OnCompletion -= OnRoundCompleted;
 
             // ★ v9.13: Scene 전환 전 모든 트윈 명시적 Kill
             KillAllCardTweens();
@@ -147,6 +157,47 @@ namespace CardGame.UI
         {
             RefreshDisplayHidden();
             AnimateInitialDeal();
+        }
+
+        /// <summary>
+        /// 라운드 종료(승리 확정) → 남은 손패를 아래로 내리며 페이드아웃 후 제거.
+        /// 다음 라운드 배패가 빈 손에서 시작되도록 해서 "이전 패가 잠깐 남아 있는" 현상 제거.
+        /// </summary>
+        private void OnRoundCompleted(int playerIndex, CompletionResult result)
+        {
+            ClearHandAnimated();
+        }
+
+        private void ClearHandAnimated()
+        {
+            if (_spawned.Count == 0) return;
+
+            var leaving = new List<GameObject>(_spawned);
+            _spawned.Clear();
+            _hoveredCard = null;
+
+            for (int i = 0; i < leaving.Count; i++)
+            {
+                var go = leaving[i];
+                if (go == null) continue;
+                go.transform.DOKill();
+
+                var cg = go.GetComponent<CanvasGroup>();
+                if (cg == null) cg = go.AddComponent<CanvasGroup>();
+                cg.DOKill();
+                cg.blocksRaycasts = false;
+                cg.interactable = false;
+
+                var rt = go.transform as RectTransform;
+                float delay = roundEndClearDelay + i * roundEndStagger;
+
+                var seq = DOTween.Sequence().SetLink(go);
+                seq.AppendInterval(delay);
+                if (rt != null)
+                    seq.Append(rt.DOAnchorPosY(rt.anchoredPosition.y - roundEndDropDistance, roundEndClearDuration).SetEase(Ease.InQuad));
+                seq.Join(cg.DOFade(0f, roundEndClearDuration).SetEase(Ease.InQuad));
+                seq.OnComplete(() => { if (go != null) Destroy(go); });
+            }
         }
 
         private void OnHandChanged(int playerIndex)

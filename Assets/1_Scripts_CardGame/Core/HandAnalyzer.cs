@@ -39,6 +39,50 @@ namespace CardGame.Core
             CompletionPattern.SevenRun => "7연속",
             _ => "미완성"
         };
+
+        // ---- 조합표(ComboGuidePanel)용 설명 — 판정 규칙(HandAnalyzer)과 같은 내용으로 유지할 것 ----
+
+        /// <summary>조합표에 보여줄 순서 (점수 높은 순).</summary>
+        public static readonly CompletionPattern[] DisplayOrder =
+        {
+            CompletionPattern.SevenRun,
+            CompletionPattern.Monochrome,
+            CompletionPattern.DoubleRun,
+            CompletionPattern.DoubleSet,
+            CompletionPattern.SetAndRun,
+        };
+
+        public static string GetPatternDescription(CompletionPattern pattern) => pattern switch
+        {
+            CompletionPattern.SevenRun => "같은 색 7장의 숫자가 모두 이어짐",
+            CompletionPattern.Monochrome => "7장이 모두 같은 색 (숫자는 상관없음)",
+            CompletionPattern.DoubleRun => "딱 두 가지 색으로만 구성, 각 색 3장 이상",
+            CompletionPattern.DoubleSet => "두 숫자로만 구성 — 한 숫자 3장 + 다른 숫자 4장 (각 숫자 안에서 색이 모두 달라야 함)",
+            CompletionPattern.SetAndRun => "같은 숫자 3~4장 (색이 모두 달라야 함) + 나머지가 모두 같은 색",
+            _ => ""
+        };
+
+        /// <summary>조합표 예시 손패 7장.</summary>
+        public static CardKind[] GetExample(CompletionPattern pattern)
+        {
+            CardKind K(CardColor c, int n) => new CardKind(c, n);
+            var R = CardColor.Red; var B = CardColor.Blue; var G = CardColor.Green; var Y = CardColor.Yellow;
+            switch (pattern)
+            {
+                case CompletionPattern.SevenRun: return new[] { K(R,2), K(R,3), K(R,4), K(R,5), K(R,6), K(R,7), K(R,8) };
+                case CompletionPattern.Monochrome: return new[] { K(B,1), K(B,3), K(B,4), K(B,6), K(B,7), K(B,8), K(B,9) };
+                case CompletionPattern.DoubleRun: return new[] { K(G,1), K(G,4), K(G,7), K(G,9), K(Y,2), K(Y,5), K(Y,8) };
+                case CompletionPattern.DoubleSet: return new[] { K(R,5), K(B,5), K(G,5), K(R,8), K(B,8), K(G,8), K(Y,8) };
+                case CompletionPattern.SetAndRun: return new[] { K(R,3), K(B,3), K(G,3), K(Y,1), K(Y,4), K(Y,6), K(Y,9) };
+                default: return new CardKind[0];
+            }
+        }
+
+        /// <summary>조합표 아래 공통 규칙 안내.</summary>
+        public const string GeneralRules =
+            "◆ 손패 7장으로 완성하며, 여러 조합에 해당하면 점수가 높은 조합으로 계산됩니다.\n" +
+            "◆ 와일드 카드는 원하는 아무 카드로 대신 쓸 수 있습니다 (최대 2장).\n" +
+            "◆ 교환·엿보기·혼돈 카드가 손에 있으면 완성할 수 없습니다.";
     }
 
     /// <summary>

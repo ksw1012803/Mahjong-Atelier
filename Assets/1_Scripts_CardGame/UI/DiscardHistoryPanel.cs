@@ -122,6 +122,7 @@ namespace CardGame.UI
         private void HandleDealStarted()
         {
             _history.Clear();
+            RefreshFilterVisual();
             if (_isShowing) Rebuild();
             UpdateCount();
         }
@@ -142,6 +143,7 @@ namespace CardGame.UI
         {
             if (_isShowing) return;
             _isShowing = true;
+            RefreshFilterVisual();   // 열 때 플레이어 수 기준으로 버튼 표시 (Awake 시점엔 아직 0명)
             Rebuild();
 
             _cg.DOKill();
@@ -180,9 +182,9 @@ namespace CardGame.UI
 #if ENABLE_INPUT_SYSTEM
             if (UnityEngine.InputSystem.Keyboard.current != null &&
                 UnityEngine.InputSystem.Keyboard.current.escapeKey.wasPressedThisFrame)
-                Hide();
+            { Hide(); SettingsPanel.MarkEscapeConsumed(); }
 #else
-            if (Input.GetKeyDown(KeyCode.Escape)) Hide();
+            if (Input.GetKeyDown(KeyCode.Escape)) { Hide(); SettingsPanel.MarkEscapeConsumed(); }
 #endif
         }
 
@@ -207,8 +209,8 @@ namespace CardGame.UI
                 var img = b.targetGraphic as Image;
                 if (img != null) img.color = (seat == _filterSeat) ? filterActiveColor : filterNormalColor;
 
-                // 존재하지 않는 좌석 버튼 숨김
-                if (seat >= 0 && gameManager != null && gameManager.Players != null)
+                // 존재하지 않는 좌석 버튼 숨김 — 플레이어가 아직 만들어지기 전(0명)에는 숨기지 않음
+                if (seat >= 0 && gameManager != null && gameManager.Players != null && gameManager.Players.Count > 0)
                     b.gameObject.SetActive(seat < gameManager.Players.Count);
             }
         }
@@ -290,9 +292,8 @@ namespace CardGame.UI
         {
             if (seat >= 0 && seat < _ownerNames.Length && !string.IsNullOrEmpty(_ownerNames[seat]))
                 return _ownerNames[seat];
-            if (gameManager != null && seat == gameManager.UserPlayerIndex) return "나";
-            // 온라인: Steam 닉네임 / BOT 이름
-            if (gameManager != null && gameManager.IsOnline && seat >= 0 && seat < gameManager.Players.Count
+            // 닉네임 / BOT1, BOT2 ...
+            if (gameManager != null && seat >= 0 && seat < gameManager.Players.Count
                 && !string.IsNullOrEmpty(gameManager.Players[seat].DisplayName))
                 return gameManager.Players[seat].DisplayName;
             return $"P{seat + 1}";

@@ -17,13 +17,12 @@ namespace CardGame.UI
     ///   browseView : 공개 로비 목록
     ///   roomView   : 좌석 4칸 · 모드 선택(호스트) · 준비 · 시작(호스트) · 초대 · 나가기
     ///
-    /// 열릴 때 CardDatabase를 미리 로드 → 게임 씬 진입 시 로딩 없음.
+    /// CardDatabase는 여기서 불러오지 않음 — [게임 시작] 시 전원이 로딩씬에서 불러옴 (CardGameNetworkManager).
     /// </summary>
     [RequireComponent(typeof(CanvasGroup))]
     public class OnlineLobbyPanel : MonoBehaviour
     {
         [Header("Data")]
-        [SerializeField] private CardDatabase cardDatabase;
         [SerializeField] private ModeDefinition[] modeDefinitions;
 
         [Header("Views")]
@@ -63,6 +62,8 @@ namespace CardGame.UI
         [SerializeField] private TMP_Text btnReadyLabel;
         [SerializeField] private Button btnStart;
         [SerializeField] private Button btnInvite;
+        [Tooltip("친구 초대 창. 비어 있으면 Steam 오버레이 초대창을 엶.")]
+        [SerializeField] private FriendInvitePanel friendInvitePanel;
         [SerializeField] private Button btnLeave;
         [SerializeField] private TMP_Text statusText;
 
@@ -97,7 +98,7 @@ namespace CardGame.UI
             Bind(btnBrowseBack, ShowMenuView);
             Bind(btnReady, ToggleReady);
             Bind(btnStart, StartGame);
-            Bind(btnInvite, () => Lobby?.OpenInviteOverlay());
+            Bind(btnInvite, OpenInvite);
             Bind(btnLeave, LeaveRoom);
             Bind(btnLanHost, LanHost);
             Bind(btnLanJoin, LanJoin);
@@ -123,7 +124,43 @@ namespace CardGame.UI
             b.onClick.AddListener(a);
         }
 
-        private void OnDestroy() => Unhook();
+        private void Start()
+        {
+            // 초대 수락은 패널이 닫혀 있어도 받아야 함
+            if (Lobby != null)
+            {
+                Lobby.OnInviteReceived += HandleInviteReceived;
+                if (Lobby.TryConsumePendingInvite(out var pending)) AcceptInvite(pending);
+            }
+        }
+
+        private void OnDestroy()
+        {
+            Unhook();
+            if (Lobby != null) Lobby.OnInviteReceived -= HandleInviteReceived;
+        }
+
+        private void HandleInviteReceived(CSteamID lobbyId)
+        {
+            if (Lobby != null && Lobby.TryConsumePendingInvite(out var id)) AcceptInvite(id);
+        }
+
+        /// <summary>친구 초대 수락 → 온라인 창을 열고 그 방에 참가.</summary>
+        private void AcceptInvite(CSteamID lobbyId)
+        {
+            if (Lobby == null || !Lobby.IsSteamReady) return;
+            if (Net != null && Net.InSession) Net.LeaveSession();   // 다른 방에 있었으면 나감
+            Show();
+            SetView(menuView);
+            SetStatus("초대받은 방에 참가하는 중...");
+            Lobby.JoinLobby(lobbyId);
+        }
+
+        private void OpenInvite()
+        {
+            if (friendInvitePanel != null) friendInvitePanel.Show();
+            else Lobby?.OpenInviteOverlay();
+        }
 
         private void Hook()
         {
@@ -182,9 +219,6 @@ namespace CardGame.UI
 
             SceneContext.Set(SceneContextKeys.OnlineSession, true);
             Hook();
-
-            // DB 미리 로드 (게임 씬 진입 시 즉시 시작 가능)
-            if (cardDatabase != null) _ = cardDatabase.InitializeAsync();
 
             // 이미 세션 중이면 방 화면으로 (게임 끝나고 돌아온 경우 등)
             if (Net != null && Net.InSession) ShowRoomView();

@@ -124,6 +124,8 @@ namespace CardGame.Core
         public event Action OnLeaveOnlineRequested;
         /// <summary>클라이언트: 로컬 UI가 버리기를 요청함 → 세션이 호스트로 전송.</summary>
         public event Action<CardData> OnClientDiscardRequested;
+        /// <summary>클라이언트: Swap 카드를 버리면서 교환 상대를 함께 보냄 (상대를 먼저 고른 뒤).</summary>
+        public event Action<CardData, int> OnClientSwapDiscardRequested;
         /// <summary>클라이언트: 로컬 UI가 완성 체크를 요청함 → 세션이 호스트로 전송.</summary>
         public event Action OnClientCompletionCheckRequested;
         /// <summary>
@@ -163,6 +165,13 @@ namespace CardGame.Core
         private bool _gameRunning = false;
 
         private SpecialCardEvent _pendingSpecial;
+
+        // ---- Swap: 버리기 전에 상대 먼저 고르기 ----
+        //  사람이 Swap 카드를 버리려 하면 교환창을 먼저 띄우고, 상대를 고르면 그때 버림 + 교환.
+        //  취소하면 아무 일도 없음 (카드는 손에 남고 다른 카드를 버릴 수 있음).
+        private const int NoPresetSwapTarget = int.MinValue;
+        private CardData _pendingSwapCard;                       // 교환창이 열린 채 버리기를 기다리는 Swap 카드
+        private int _presetSwapTarget = NoPresetSwapTarget;       // 버리기 직후 Swap 효과에 쓸 상대 (SwapTargetRandom = 랜덤)
         private BotAI _botAI;
 
         private GameSessionConfig _sessionConfig;
@@ -184,6 +193,7 @@ namespace CardGame.Core
             if (roundResultPanel != null) roundResultPanel.OnNextRoundClicked += HandleNextRoundRequested;
             if (finalResultPanel != null) finalResultPanel.OnRestartClicked += HandleRestartRequested;
             if (swapTargetPanel != null) swapTargetPanel.OnTargetSelected += HandleSwapTargetSelected;
+            if (swapTargetPanel != null) swapTargetPanel.OnSkipped += HandleSwapSkipped;
             if (peekChoicePanel != null) peekChoicePanel.OnCardSelected += HandlePeekCardSelectedFromPanel;
 
             if (cardDatabase == null)
@@ -199,6 +209,7 @@ namespace CardGame.Core
             CardGame.UI.CardView.SetDatabase(cardDatabase);
             CardGame.UI3D.Card3DDiscardPileView.SetDatabase(cardDatabase);
             CardGame.UI3D.Card3DCentralDiscardPile.SetDatabase(cardDatabase);
+            Card3DResourceMapper.SetDatabase(cardDatabase);
             _deck.SetDatabase(cardDatabase);
             IsDatabaseReady = true;
 
@@ -219,6 +230,7 @@ namespace CardGame.Core
             if (roundResultPanel != null) roundResultPanel.OnNextRoundClicked -= HandleNextRoundRequested;
             if (finalResultPanel != null) finalResultPanel.OnRestartClicked -= HandleRestartRequested;
             if (swapTargetPanel != null) swapTargetPanel.OnTargetSelected -= HandleSwapTargetSelected;
+            if (swapTargetPanel != null) swapTargetPanel.OnSkipped -= HandleSwapSkipped;
             if (peekChoicePanel != null) peekChoicePanel.OnCardSelected -= HandlePeekCardSelectedFromPanel;
 
             cardDatabase?.Release();
@@ -273,14 +285,14 @@ namespace CardGame.Core
             // 아직 플레이어 생성 전(준비 대기 중)이면 설정만 바꿔서 StartGame 때 봇으로 생성되게
             if (_sessionConfig != null)
                 foreach (var sc in _sessionConfig.Seats)
-                    if (sc.Seat == seat) { sc.Type = PlayerType.Bot; sc.DisplayName = $"BOT {seat + 1}"; }
+                    if (sc.Seat == seat) { sc.Type = PlayerType.Bot; }
 
             if (seat < 0 || seat >= _players.Count) return;
             var p = _players[seat];
             if (p.IsBot) return;
 
             p.Type = PlayerType.Bot;
-            p.DisplayName = $"BOT {seat + 1} (이탈)";
+            p.DisplayName = $"{p.DisplayName} (이탈)";
             Debug.Log($"[CardGame] 좌석 {seat} → 봇 전환");
 
             if (_gameEnded) return;
@@ -367,7 +379,7 @@ namespace CardGame.Core
             for (int i = 0; i < _players.Count; i++)
             {
                 data.Scores[i] = _players[i].TotalScore;
-                var sc = new SeatConfig { Seat = i, Type = _players[i].Type, DisplayName = _players[i].DisplayName };
+                var sc = new SeatConfig { Seat = i, Type = _players[i].Type, DisplayName = _players[i].DisplayName, CharacterIndex = _players[i].CharacterIndex };
                 if (_sessionConfig != null)
                     foreach (var s in _sessionConfig.Seats)
                         if (s.Seat == i) sc.SteamId = s.SteamId;
@@ -589,6 +601,7 @@ namespace CardGame.Core
                 {
                     var p = new Player(seat.Seat, seat.Type);
                     if (!string.IsNullOrEmpty(seat.DisplayName)) p.DisplayName = seat.DisplayName;
+                    p.CharacterIndex = seat.CharacterIndex;
                     _players.Add(p);
                 }
                 _players.Sort((a, b) => a.Index.CompareTo(b.Index));
@@ -596,12 +609,28 @@ namespace CardGame.Core
                 return;
             }
 
+            // 싱글플레이: 나 = 닉네임 + 선택 캐릭터, 봇 = BOT1, BOT2 ... + 겹치지 않는 캐릭터
+            int myChar = PlayerProfile.CharacterIndex;
+            var botChars = CharacterDatabase.PickBotCharacters(new[] { myChar }, Mathf.Max(0, playerCount - 1));
+            int botNo = 0;
             for (int i = 0; i < playerCount; i++)
             {
-                var type = (i == userPlayerIndex) ? PlayerType.Human : PlayerType.Bot;
-                _players.Add(new Player(i, type));
+                bool me = i == userPlayerIndex;
+                var p = new Player(i, me ? PlayerType.Human : PlayerType.Bot);
+                if (me)
+                {
+                    p.DisplayName = PlayerProfile.Nickname;
+                    p.CharacterIndex = myChar;
+                }
+                else
+                {
+                    p.DisplayName = PlayerProfile.BotName(botNo + 1);
+                    p.CharacterIndex = botNo < botChars.Length ? botChars[botNo] : 0;
+                    botNo++;
+                }
+                _players.Add(p);
             }
-            Debug.Log($"[CardGame] 플레이어 {playerCount}명 생성");
+            Debug.Log($"[CardGame] 플레이어 {playerCount}명 생성: {string.Join(", ", _players)}");
         }
 
         // =====================================================================
@@ -858,7 +887,10 @@ namespace CardGame.Core
         /// 버리기 요청 (로컬 UI 또는 세션이 원격 입력을 받아 호출).
         /// 클라이언트 모드에선 세션 이벤트로 위임하고 낙관적으로 true 반환.
         /// </summary>
-        public bool RequestDiscard(CardData card)
+        public bool RequestDiscard(CardData card) => RequestDiscard(card, NoPresetSwapTarget);
+
+        /// <summary>버리기 요청. swapTarget: Swap 카드일 때 미리 고른 교환 상대 (원격 플레이어용).</summary>
+        public bool RequestDiscard(CardData card, int swapTarget)
         {
             if (_phase != GamePhase.WaitingDiscard) return false;
             if (card == null) return false;
@@ -869,6 +901,7 @@ namespace CardGame.Core
                 var me = _players[userPlayerIndex];
                 if (!me.Hand.Contains(card)) return false;
                 if (me.Hand.Count != completionHandSize) return false;
+                if (TryOpenSwapPreChoice(me, card)) return true;
                 OnClientDiscardRequested?.Invoke(card);
                 return true;
             }
@@ -878,24 +911,77 @@ namespace CardGame.Core
             if (!player.Hand.Contains(card)) return false;
             if (player.Hand.Count != completionHandSize) return false;
 
+            if (IsSwapCard(card))
+            {
+                if (swapTarget != NoPresetSwapTarget) _presetSwapTarget = swapTarget;          // 원격: 상대를 이미 고름
+                else if (player.Index == userPlayerIndex && TryOpenSwapPreChoice(player, card)) return true;   // 로컬: 먼저 고르기
+            }
+
             Debug.Log($"[User] P{player.Index} 버림: {card}");
             ExecuteDiscard(player, card);
             return true;
         }
 
+        private static bool IsSwapCard(CardData card) =>
+            card != null && card.Kind.IsSpecial && card.Kind.Special == SpecialCardType.Swap;
+
+        /// <summary>Swap 카드면 교환창을 먼저 띄움. 띄웠으면 true (아직 버리지 않음).</summary>
+        private bool TryOpenSwapPreChoice(Player player, CardData card)
+        {
+            if (!IsSwapCard(card) || swapTargetPanel == null) return false;
+
+            bool anyTarget = false;
+            foreach (var p in _players) if (p.Index != player.Index && p.Hand.Count > 0) { anyTarget = true; break; }
+            if (!anyTarget) return false;   // 교환할 상대가 없으면 그냥 버림
+
+            _pendingSwapCard = card;
+            swapTargetPanel.Show(player, _players);
+            return true;
+        }
+
+        /// <summary>교환창이 열린 채 차례가 끝나는 등 상황이 바뀌면 정리.</summary>
+        private void CancelPendingSwapChoice()
+        {
+            if (_pendingSwapCard == null) return;
+            _pendingSwapCard = null;
+            swapTargetPanel?.Hide();
+        }
+
+        /// <summary>교환창에서 상대를 고름 → 이제 Swap 카드를 버리고 바로 교환.</summary>
+        private void CommitPendingSwap(int targetSeat)
+        {
+            var card = _pendingSwapCard;
+            _pendingSwapCard = null;
+            if (card == null || _phase != GamePhase.WaitingDiscard) return;
+
+            if (IsNetworkClient)
+            {
+                OnClientSwapDiscardRequested?.Invoke(card, targetSeat);
+                return;
+            }
+
+            var player = _players[_currentPlayerIndex];
+            if (!player.Hand.Contains(card)) return;
+            _presetSwapTarget = targetSeat;
+            Debug.Log($"[User] P{player.Index} 버림: {card} (교환 상대 P{targetSeat})");
+            ExecuteDiscard(player, card);
+        }
+
         /// <summary>호스트: 특정 좌석(원격 플레이어)의 버리기 요청. 차례·소유 검증 포함.</summary>
-        public bool RequestDiscardForSeat(int seat, int instanceId)
+        public bool RequestDiscardForSeat(int seat, int instanceId, int swapTarget = NoPresetSwapTarget)
         {
             if (!IsNetworkHost) return false;
             if (seat != _currentPlayerIndex) return false;
             if (seat < 0 || seat >= _players.Count) return false;
             var card = _players[seat].FindCard(instanceId);
             if (card == null) return false;
-            return RequestDiscard(card);
+            return RequestDiscard(card, swapTarget);
         }
 
         private void ExecuteDiscard(Player player, CardData card)
         {
+            if (_pendingSwapCard != null && _pendingSwapCard != card) CancelPendingSwapChoice();
+
             StopTimeout();
             StopBotDeclare();
             ClearWinAvailable();
@@ -945,6 +1031,15 @@ namespace CardGame.Core
 
         private void HandleSwapCard(Player source)
         {
+            // 버리기 전에 상대를 이미 고른 경우 → 바로 교환
+            if (_presetSwapTarget != NoPresetSwapTarget)
+            {
+                int preset = _presetSwapTarget;
+                _presetSwapTarget = NoPresetSwapTarget;
+                ExecutePresetSwap(source, preset);
+                return;
+            }
+
             if (source.IsBot)
             {
                 _activeCoroutine = StartCoroutine(BotSwapCoroutine(source));
@@ -970,6 +1065,25 @@ namespace CardGame.Core
             }
         }
 
+        private void ExecutePresetSwap(Player source, int targetSeat)
+        {
+            bool valid = targetSeat >= 0 && targetSeat < _players.Count && targetSeat != source.Index
+                         && _players[targetSeat].Hand.Count > 0 && source.Hand.Count > 0;
+            if (valid)
+            {
+                var target = _players[targetSeat];
+                var sourceCard = source.Hand[0];
+                var targetCard = target.Hand[_rng.Next(target.Hand.Count)];
+                SpecialCardExecutor.ExecuteSwap(source, target, sourceCard, targetCard);
+                _pendingSpecial.TargetPlayerIndex = target.Index;
+            }
+            else
+            {
+                SpecialCardExecutor.ExecuteSwapAuto(source, _players, _rng);   // 랜덤 선택 또는 잘못된 대상
+            }
+            CompleteSpecialCard();
+        }
+
         private IEnumerator BotSwapCoroutine(Player source)
         {
             yield return new WaitForSeconds(specialCardDelay);
@@ -991,8 +1105,12 @@ namespace CardGame.Core
             CompleteSpecialCard();
         }
 
+        /// <summary>SubmitSwapTarget의 targetSeat 특수값: 랜덤 / 교환 안 함.</summary>
+        public const int SwapTargetRandom = -1;
+        public const int SwapTargetSkip = -2;
+
         /// <summary>
-        /// 온라인(호스트): 좌석의 Swap 상대 선택 제출. targetSeat &lt; 0 이면 랜덤.
+        /// 온라인(호스트): 좌석의 Swap 상대 선택 제출. targetSeat == SwapTargetRandom(-1) 이면 랜덤, SwapTargetSkip(-2) 이면 교환 안 함.
         /// 카드는 블라인드 (싱글플레이 패널과 동일: 내 첫 카드 ↔ 상대 랜덤 카드).
         /// </summary>
         public bool SubmitSwapTarget(int seat, int targetSeat)
@@ -1004,6 +1122,14 @@ namespace CardGame.Core
             if (seat < 0 || seat >= _players.Count) return false;
 
             var source = _players[seat];
+
+            if (targetSeat == SwapTargetSkip)
+            {
+                StopTimeout();
+                Debug.Log($"[Special] P{seat} Swap 취소 (교환 안 함)");
+                CompleteSpecialCard();
+                return true;
+            }
 
             if (targetSeat < 0)
             {
@@ -1028,11 +1154,21 @@ namespace CardGame.Core
 
         private void HandleSwapTargetSelected(Player target, CardData sourceCard, CardData targetCard)
         {
+            if (_pendingSwapCard != null) { CommitPendingSwap(target != null ? target.Index : SwapTargetRandom); return; }
             if (IsOnline) return;
             if (_pendingSpecial == null) return;
             var source = _players[_pendingSpecial.SourcePlayerIndex];
             SpecialCardExecutor.ExecuteSwap(source, target, sourceCard, targetCard);
             _pendingSpecial.TargetPlayerIndex = target.Index;
+            CompleteSpecialCard();
+        }
+
+        private void HandleSwapSkipped()
+        {
+            if (_pendingSwapCard != null) { _pendingSwapCard = null; return; }   // 버리기 전 취소 → 아무 일 없음
+            if (IsOnline) return;   // 온라인은 세션이 SubmitSwapTarget(SwapTargetSkip)으로 처리
+            if (_pendingSpecial == null || _pendingSpecial.Type != SpecialCardType.Swap) return;
+            Debug.Log($"[Special] P{_pendingSpecial.SourcePlayerIndex} Swap 취소 (교환 안 함)");
             CompleteSpecialCard();
         }
 
@@ -1258,6 +1394,7 @@ namespace CardGame.Core
             if (_phase == next) return;
             var prev = _phase;
             _phase = next;
+            if (next != GamePhase.WaitingDiscard) CancelPendingSwapChoice();
             CardGameEvents.RaisePhaseChanged(prev, next);
         }
 
@@ -1485,7 +1622,7 @@ namespace CardGame.Core
         {
             if (seat < 0 || seat >= _players.Count) return;
             _players[seat].Type = PlayerType.Bot;
-            _players[seat].DisplayName = $"BOT {seat + 1} (이탈)";
+            if (!_players[seat].DisplayName.EndsWith("(이탈)")) _players[seat].DisplayName = $"{_players[seat].DisplayName} (이탈)";
         }
 
         /// <summary>클라이언트: 좌석에 사람이 복귀함 (재접속).</summary>

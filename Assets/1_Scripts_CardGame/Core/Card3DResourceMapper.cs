@@ -3,40 +3,59 @@ using UnityEngine;
 namespace CardGame.Core
 {
     /// <summary>
-    /// CardData → 3D 프리팹 이름 매핑.
-    /// 
-    /// 파일 이름 규칙: {Color}_{Theme}_{Number:000}
-    /// - Red_Fire_001 ~ Red_Fire_009
-    /// - Blue_Water_001 ~ Blue_Water_009
-    /// - Green_Air_001 ~ Green_Air_009
-    /// - Yellow_Earth_001 ~ Yellow_Earth_009
-    /// 
-    /// Resources 폴더에 있어야 Resources.Load로 접근 가능.
+    /// CardData → 3D 카드 프리팹.
+    ///
+    /// 우선순위:
+    ///   1) CardDatabase (Addressables) — CardDefinition.prefab3D. 숫자 패 36 + 특수 패 4 모두 여기서.
+    ///      프리팹: Assets/3_Prefabs/Cards3D/ (Red_Ele_01 ~ Yellow_Ele_09, Wild, Confusion, Exchange, Serch)
+    ///   2) (레거시) Resources/Cards/{Color}_{Theme}_{000} — DB가 아직 없을 때만
+    ///
+    /// CardGameManager가 시작 시 SetDatabase()로 DB를 넘겨줌.
     /// </summary>
     public static class Card3DResourceMapper
     {
-        /// <summary>
-        /// CardData → 3D 프리팹 리소스 경로 (Resources 폴더 기준).
-        /// 예: "Cards/Red_Fire_003"
-        /// </summary>
+        private static CardDatabase _database;
+        private static bool _warnedLegacy;
+
+        public static void SetDatabase(CardDatabase db) => _database = db;
+
+        /// <summary>3D 프리팹. 없으면 null (호출 쪽에서 fallback 사용).</summary>
+        public static GameObject LoadPrefab(CardData card)
+        {
+            if (card == null) return null;
+
+            if (_database != null && card.Definition != null)
+            {
+                var prefab = _database.GetPrefab(card.Definition);
+                if (prefab != null) return prefab;
+            }
+
+            // 레거시 경로 (DB 미설정 상태에서 테스트할 때)
+            string path = GetPrefabPath(card);
+            if (string.IsNullOrEmpty(path)) return null;
+            var legacy = Resources.Load<GameObject>(path);
+            if (legacy == null && !_warnedLegacy)
+            {
+                _warnedLegacy = true;
+                Debug.LogWarning($"[Card3DResourceMapper] 3D 프리팹 못 찾음 ({card}). CardDatabase가 초기화됐는지 확인하세요.");
+            }
+            return legacy;
+        }
+
+        /// <summary>(레거시) Resources 경로. 예: "Cards/Red_Fire_003"</summary>
         public static string GetPrefabPath(CardData card)
         {
             if (card == null || card.Kind.IsSpecial) return null;
             return $"Cards/{GetPrefabName(card.Kind)}";
         }
 
-        /// <summary>
-        /// CardKind → 파일 이름 (확장자 없음).
-        /// 예: Red 3 → "Red_Fire_003"
-        /// </summary>
+        /// <summary>(레거시) CardKind → 옛 파일 이름. 예: Red 3 → "Red_Fire_003"</summary>
         public static string GetPrefabName(CardKind kind)
         {
             if (kind.IsSpecial) return null;
-            string colorTheme = GetColorTheme(kind.Color);
-            return $"{colorTheme}_{kind.Number:D3}";
+            return $"{GetColorTheme(kind.Color)}_{kind.Number:D3}";
         }
 
-        /// <summary>색 → 테마 이름.</summary>
         public static string GetColorTheme(CardColor color) => color switch
         {
             CardColor.Red => "Red_Fire",
@@ -45,22 +64,5 @@ namespace CardGame.Core
             CardColor.Yellow => "Yellow_Earth",
             _ => "Unknown"
         };
-
-        /// <summary>
-        /// 3D 프리팹 로드 (Resources.Load).
-        /// null 반환 시 프리팹 없음 (Wild 카드 등 미제작 카드).
-        /// </summary>
-        public static GameObject LoadPrefab(CardData card)
-        {
-            string path = GetPrefabPath(card);
-            if (string.IsNullOrEmpty(path)) return null;
-
-            var prefab = Resources.Load<GameObject>(path);
-            if (prefab == null)
-            {
-                Debug.LogWarning($"[Card3DResourceMapper] 프리팹 못 찾음: {path}");
-            }
-            return prefab;
-        }
     }
 }

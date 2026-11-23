@@ -48,13 +48,13 @@ namespace CardGame.UI3D
 
             GameObject prefab = null;
 
-            if (!showBack && !CardData.Kind.IsSpecial)
+            if (!showBack)
             {
-                // 앞면 & 일반 카드 → 색_테마_번호 프리팹
+                // 앞면 → CardDatabase의 3D 프리팹 (숫자 패·특수 패 모두)
                 prefab = Card3DResourceMapper.LoadPrefab(CardData);
             }
 
-            // 프리팹 없거나 Wild/특수/뒷면 → fallback
+            // 프리팹 없거나 뒷면 → fallback
             if (prefab == null && fallbackPrefab != null)
             {
                 prefab = fallbackPrefab;

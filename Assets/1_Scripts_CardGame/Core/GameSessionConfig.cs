@@ -20,6 +20,8 @@ namespace CardGame.Core
         public PlayerType Type;
         public string DisplayName;
         public ulong SteamId;
+        /// <summary>캐릭터 (CharacterDatabase index).</summary>
+        public int CharacterIndex;
 
         public override string ToString() => $"Seat{Seat}:{Type}:{DisplayName}";
     }
@@ -56,6 +58,33 @@ namespace CardGame.Core
         public int ModeIndex;
         /// <summary>좌석별 구성 (SteamId로 원래 자리 복구).</summary>
         public List<SeatConfig> Seats = new List<SeatConfig>();
+    }
+
+    public static class SeatIdentity
+    {
+        /// <summary>
+        /// 봇 좌석에 이름(BOT1, BOT2 ...)과 캐릭터(사람과 겹치지 않게)를 배정.
+        /// 캐릭터는 랜덤 — 호스트·클라이언트가 같은 botSeed를 넘기면 같은 결과.
+        /// </summary>
+        public static void AssignBots(GameSessionConfig cfg, int botSeed)
+        {
+            if (cfg == null) return;
+            var humanChars = new List<int>();
+            int botCount = 0;
+            foreach (var s in cfg.Seats) { if (s.Type == PlayerType.Bot) botCount++; else humanChars.Add(s.CharacterIndex); }
+
+            var picks = CharacterDatabase.PickBotCharacters(humanChars, botCount, new System.Random(botSeed));
+            int b = 0;
+            var ordered = new List<SeatConfig>(cfg.Seats);
+            ordered.Sort((x, y) => x.Seat.CompareTo(y.Seat));
+            foreach (var s in ordered)
+            {
+                if (s.Type != PlayerType.Bot) continue;
+                s.DisplayName = PlayerProfile.BotName(b + 1);
+                s.CharacterIndex = b < picks.Length ? picks[b] : 0;
+                b++;
+            }
+        }
     }
 
     /// <summary>SceneContext 키 모음 (문자열 오타 방지).</summary>

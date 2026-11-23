@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using DG.Tweening;
 using UnityEngine;
 using CardGame.Core;
 
@@ -61,6 +62,7 @@ namespace CardGame.UI3D
             CardGameEvents.OnHandChanged += HandleHandChanged;
             CardGameEvents.OnCardDrawn += HandleCardDrawn;
             CardGameEvents.OnDealCompleted += HandleDealCompleted;
+            CardGameEvents.OnCompletion += HandleRoundCompleted;
         }
 
         private void OnDisable()
@@ -68,6 +70,7 @@ namespace CardGame.UI3D
             CardGameEvents.OnHandChanged -= HandleHandChanged;
             CardGameEvents.OnCardDrawn -= HandleCardDrawn;
             CardGameEvents.OnDealCompleted -= HandleDealCompleted;
+            CardGameEvents.OnCompletion -= HandleRoundCompleted;
         }
 
         private void Awake()
@@ -125,6 +128,22 @@ namespace CardGame.UI3D
         {
             _lastDrawnCard = null;
             RefreshDisplay();
+        }
+
+        /// <summary>라운드 종료 → 3D 손패를 작아지며 사라지게 (다음 배패 전 테이블 정리).</summary>
+        private void HandleRoundCompleted(int playerIndex, CompletionResult result)
+        {
+            _lastDrawnCard = null;
+            var leaving = new List<GameObject>(_spawnedCards);
+            _spawnedCards.Clear();
+            for (int i = 0; i < leaving.Count; i++)
+            {
+                var go = leaving[i];
+                if (go == null) continue;
+                go.transform.DOKill();
+                go.transform.DOScale(Vector3.zero, 0.3f).SetDelay(0.5f + i * 0.03f).SetEase(Ease.InBack)
+                    .SetLink(go).OnComplete(() => { if (go != null) Destroy(go); });
+            }
         }
 
         private void HandleHandChanged(int playerIndex)

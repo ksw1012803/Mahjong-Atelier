@@ -30,6 +30,10 @@ namespace CardGame.UI
         [Header("Score Board")]
         [Tooltip("플레이어별 누적 점수 표시. 최대 4개")]
         [SerializeField] private TMP_Text[] playerScoreTexts = new TMP_Text[4];
+        [Tooltip("플레이어별 캐릭터 초상화 (playerScoreTexts와 같은 순서 = 좌석 순서).")]
+        [SerializeField] private Image[] playerPortraits = new Image[4];
+        [Tooltip("초상화 Image의 부모(프로필 틀)를 인원수에 맞춰 켜고 끔.")]
+        [SerializeField] private bool togglePortraitParent = true;
 
         [Header("Next Round Button")]
         [SerializeField] private Button nextRoundButton;
@@ -63,8 +67,8 @@ namespace CardGame.UI
 
             if (winnerText != null)
             {
-                string marker = winner.IsHuman ? " (나)" : "";
-                winnerText.text = $"P{winner.Index}{marker}";
+                string marker = winner.IsLocalHuman ? " (나)" : "";
+                winnerText.text = $"{winner.DisplayName}{marker}";
             }
 
             // 점수판
@@ -76,13 +80,27 @@ namespace CardGame.UI
                 {
                     var p = allPlayers[i];
                     text.gameObject.SetActive(true);
-                    string marker = p.IsHuman ? " (나)" : "";
-                    text.text = $"P{p.Index}{marker}  {p.TotalScore} / {winningScore}";
+                    string marker = p.IsLocalHuman ? " (나)" : "";
+                    text.text = $"{p.DisplayName}{marker}  {p.TotalScore} / {winningScore}";
                 }
                 else
                 {
                     text.gameObject.SetActive(false);
                 }
+            }
+
+            // 캐릭터 초상화
+            var db = CharacterDatabase.Instance;
+            for (int i = 0; i < playerPortraits.Length; i++)
+            {
+                var img = playerPortraits[i];
+                if (img == null) continue;
+                bool has = i < allPlayers.Count;
+                var holder = togglePortraitParent && img.transform.parent != null ? img.transform.parent.gameObject : img.gameObject;
+                holder.SetActive(has);
+                if (!has) continue;
+                var def = db != null ? db.Get(allPlayers[i].CharacterIndex) : null;
+                if (def != null && def.portrait != null) img.sprite = def.portrait;
             }
 
             if (nextRoundButtonLabel != null && string.IsNullOrEmpty(nextRoundButtonLabel.text))

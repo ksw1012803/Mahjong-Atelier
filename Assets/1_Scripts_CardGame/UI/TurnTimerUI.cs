@@ -7,17 +7,17 @@ using CardGame.Core;
 namespace CardGame.UI
 {
     /// <summary>
-    /// 온라인 턴 타이머 표시 — 남은 시간 게이지 + 초 숫자.
+    /// 온라인 턴 타이머 표시 — 남은 초 숫자 (게이지 없음).
     ///
     ///   - CardGameManager.OnTurnTimerChanged(seat, duration) 구독. seat &lt; 0 이면 숨김
     ///   - 버리기 제한(30초), Peek/Swap 선택 제한(15초) 모두 같은 타이머로 표시
-    ///   - 남은 시간이 warningThreshold 이하면 색이 바뀌고 숫자가 살짝 뜀
+    ///   - 남은 시간 cautionThreshold(15초) 이하: 주황색 + 한 번 살짝 뜀
+    ///   - 남은 시간 warningThreshold(5초) 이하: 빨간색 + 매초 숫자가 뜀
     ///   - 싱글플레이는 제한 시간이 없으므로 나타나지 않음
     ///   - CanvasGroup 패턴: Scene에 활성 상태로 배치. Awake에서 숨김
     ///
     /// 계층 (예):
     ///   TurnTimer (CanvasGroup + 이 컴포넌트)
-    ///   ├─ Fill (Image, Image Type = Filled, Fill Method = Radial 360 또는 Horizontal)  → fillImage
     ///   ├─ Seconds (TMP)                                                                → secondsText
     ///   └─ Owner (TMP, 선택)  "OO의 차례"                                                → ownerText
     /// </summary>
@@ -25,7 +25,6 @@ namespace CardGame.UI
     public class TurnTimerUI : MonoBehaviour
     {
         [SerializeField] private CardGameManager gameManager;
-        [SerializeField] private Image fillImage;
         [SerializeField] private TMP_Text secondsText;
         [SerializeField] private TMP_Text ownerText;
 
@@ -36,8 +35,12 @@ namespace CardGame.UI
         [SerializeField] private string otherTurnFormat = "{0}의 차례";
 
         [Header("색")]
-        [SerializeField] private Color normalColor = new Color(0.45f, 0.85f, 0.45f);
-        [SerializeField] private Color warningColor = new Color(1f, 0.4f, 0.35f);
+        [SerializeField] private Color normalColor = Color.white;
+        [Tooltip("남은 시간이 cautionThreshold 이하일 때 (주황).")]
+        [SerializeField] private Color cautionColor = new Color(1f, 0.62f, 0.15f);
+        [SerializeField] private float cautionThreshold = 15f;
+        [Tooltip("남은 시간이 warningThreshold 이하일 때 (빨강).")]
+        [SerializeField] private Color warningColor = new Color(1f, 0.3f, 0.25f);
         [SerializeField] private float warningThreshold = 5f;
 
         [Header("Fade")]
@@ -47,6 +50,7 @@ namespace CardGame.UI
         private bool _visible;
         private float _duration;
         private int _lastShownSecond = -1;
+        private int _lastLevel = -1;   // 0=보통 1=주의 2=경고
         private bool _hooked;
 
         private void Awake()
@@ -87,6 +91,7 @@ namespace CardGame.UI
 
             _duration = Mathf.Max(0.01f, duration);
             _lastShownSecond = -1;
+            _lastLevel = -1;
 
             if (ownerText != null)
             {
@@ -112,31 +117,29 @@ namespace CardGame.UI
         private void Refresh()
         {
             float remaining = gameManager.TurnTimerRemaining;
-            bool warning = remaining <= warningThreshold;
-            Color c = warning ? warningColor : normalColor;
-
-            if (fillImage != null)
-            {
-                fillImage.fillAmount = Mathf.Clamp01(remaining / _duration);
-                fillImage.color = c;
-            }
-
             int sec = Mathf.CeilToInt(remaining);
             if (sec == _lastShownSecond) return;
             _lastShownSecond = sec;
+
+            int level = sec <= warningThreshold ? 2 : sec <= cautionThreshold ? 1 : 0;
+            Color c = level == 2 ? warningColor : level == 1 ? cautionColor : normalColor;
 
             if (secondsText != null)
             {
                 secondsText.text = sec.ToString();
                 secondsText.color = c;
-                if (warning)
+
+                // 경고(빨강): 매초 뜀 / 주의(주황): 처음 바뀔 때 한 번만 살짝
+                bool pop = level == 2 || (level == 1 && _lastLevel != 1 && _lastLevel != -1);
+                if (pop)
                 {
                     var t = secondsText.transform;
                     t.DOKill();
-                    t.localScale = Vector3.one * 1.25f;
+                    t.localScale = Vector3.one * (level == 2 ? 1.25f : 1.15f);
                     t.DOScale(1f, 0.25f).SetEase(Ease.OutQuad).SetLink(secondsText.gameObject);
                 }
             }
+            _lastLevel = level;
         }
 
         private void Show()
